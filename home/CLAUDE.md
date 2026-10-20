@@ -22,6 +22,10 @@ Applies to every project. Project CLAUDE.md files override this where they confl
 - Small, focused commits with messages that say why. Never force-push, rewrite published history, or push to the default branch.
 - Leave the working tree clean or explain what is uncommitted and why.
 
+## Pull requests
+- Open PRs with /open-pr. Every PR ships with a committed doc, `docs/pr/<date>-<branch>.md`: what changed and why, how it was verified (commands and results), and Mermaid diagrams. At least one `sequenceDiagram` of the main flow, plus flowchart, erDiagram, stateDiagram-v2 or classDiagram when they clarify something. A hook blocks `gh pr create` without it.
+- Never merge your own PR; that is the human's call.
+
 ## Long-running and parallel work
 - For multi-session work, keep `HANDOFF.md` current (use /handoff) so a fresh session can continue without re-discovery.
 - When blocked, state exactly what is needed (a decision, a credential, access) and stop rather than guessing around it.

@@ -155,6 +155,7 @@ each_item() { # calls "$1 <rel> <dest>" for every managed item
   for f in "$SRC"/agents/*.md; do n=$(basename "$f"); "$1" "agents/$n" "$CD/agents/$n"; done
   for d in "$SRC"/skills/*/; do n=$(basename "$d"); "$1" "skills/$n" "$CD/skills/$n"; done
   "$1" loop.md "$CD/loop.md"
+  "$1" bin/autopilot "$HOME/.local/bin/autopilot"
 }
 
 install_playbook_dir() {
@@ -195,9 +196,10 @@ do_install() {
   fi
 
   section "Files"
-  run mkdir -p "$CD" "$CD/agents" "$CD/skills"
+  run mkdir -p "$CD" "$CD/agents" "$CD/skills" "$HOME/.local/bin"
   install_playbook_dir
   each_item link_item
+  case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "note: add ~/.local/bin to your PATH to use the autopilot command" ;; esac
 
   section "Global instructions"
   if [ -f "$MEMORY" ] && grep -qF "$BEGIN_MARK" "$MEMORY"; then

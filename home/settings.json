@@ -11,6 +11,10 @@
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git worktree list *)",
+      "Bash(git fetch *)",
+      "Bash(git push -u origin *)",
+      "Bash(git push origin *)",
+      "Bash(gh pr create *)",
       "Bash(gh pr view *)",
       "Bash(gh pr list *)",
       "Bash(gh pr diff *)",
@@ -46,6 +50,12 @@
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "__PLAYBOOK__/hooks/guard-bash.sh" }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "__PLAYBOOK__/hooks/pr-doc-gate.sh" }
         ]
       }
     ],

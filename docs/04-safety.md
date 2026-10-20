@@ -34,7 +34,7 @@ Path anchors are a common trap:
 
 Bash rules match the command text after Claude Code splits compound commands and strips wrappers; they don't follow aliases or scripts. For enforcement that doesn't depend on command text, use the sandbox.
 
-**What the playbook installs:** allow rules for read-only git and `gh` inspection plus local commits; deny rules for `.env` files (with `.env.example`-style exceptions), SSH/AWS/GPG credentials, the `gh` token file and `~/.netrc`, and force-push. Project-specific allows (your test and lint commands) belong in each repo's `.claude/settings.json`, which `/bootstrap-project` writes.
+**What the playbook installs:** allow rules for read-only git and `gh` inspection, local commits, pushing branches and `gh pr create` (the guard and PR-doc hooks police those); deny rules for `.env` files (with `.env.example`-style exceptions), SSH/AWS/GPG credentials, the `gh` token file and `~/.netrc`, and force-push. Project-specific allows (your test and lint commands) belong in each repo's `.claude/settings.json`, which `/bootstrap-project` writes.
 
 ## Sandbox
 
@@ -44,8 +44,9 @@ Bash rules match the command text after Claude Code splits compound commands and
 
 Hooks are scripts that run at lifecycle events. Exit code `2` from a `PreToolUse` hook blocks the call even when an allow rule would permit it; a `Stop` hook exiting `2` sends Claude back to work (for example "tests must pass first").
 
-The playbook installs two:
-- `guard-bash.sh` (PreToolUse/Bash): blocks recursive `rm` on `/`, `~`, `$HOME`, `.` or `*`, and force-pushes. It's deliberately short, a last line of defence that never gets in the way of normal work.
+The playbook installs three:
+- `guard-bash.sh` (PreToolUse/Bash): blocks recursive `rm` on `/`, `~`, `$HOME`, `.` or `*`, force-pushes, and pushes to the default branch (changes go through PRs). It's deliberately short, a last line of defence that never gets in the way of normal work.
+- `pr-doc-gate.sh` (PreToolUse/Bash): blocks `gh pr create` unless the branch commits a PR doc in `docs/pr/` with at least one Mermaid `sequenceDiagram`. `/open-pr` writes the doc. Opt a project out with `"env": {"PLAYBOOK_PR_DOC": "0"}` in its `.claude/settings.json`. It can't see PRs opened through a GitHub MCP server, so prefer `gh`.
 - `notify.sh` (Notification and Stop, async): a desktop alert when a session needs you or finishes a turn. It's what makes parallel sessions practical (see [6. Keeping agents busy](06-keeping-agents-busy.md)). Set `PLAYBOOK_NOTIFY_ON_STOP=0` to only get alerts when input is needed.
 
 Good additions per project: a PostToolUse hook that runs the formatter after edits, or a Stop hook that runs the fast test suite.

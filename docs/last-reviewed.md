@@ -6,6 +6,7 @@
 
 ## Adopted in this review
 - Initial version of the playbook.
+- Autopilot built on `/goal`, auto mode and `CLAUDE_CODE_RETRY_WATCHDOG` (usage-limit waiting in non-interactive runs).
 
 ## Watching (research preview or experimental; not in the baseline yet)
 - Agent view / background sessions (`claude agents`, `--bg`)

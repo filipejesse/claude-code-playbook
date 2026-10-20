@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# autopilot: run Claude Code unattended on a project until its SPEC.md is done.
+# - /goal keeps Claude working turn after turn until the spec is verified
+# - auto mode + no AskUserQuestion: Claude decides, records decisions, keeps going
+# - CLAUDE_CODE_RETRY_WATCHDOG waits out usage limits (session and weekly) and resumes
+# - never spends usage credits: refuses to start, and stops, if usage credits are enabled
+# - the machine is kept awake; if the claude process dies, it is resumed (same session)
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: autopilot <command> [project-dir]
+
+  start    start in the background (default dir: current directory)
+  run      run in the foreground (what `start` runs)
+  status   show state, attempts and recent activity
+  log      follow activity as it happens (Ctrl+C stops following, not the run)
+  stop     stop the run
+
+The project needs a SPEC.md (create it with /autopilot-spec). Claude works until it
+writes AUTOPILOT_DONE.md with the verification evidence, or AUTOPILOT_BLOCKED.md if it
+can't continue without a human.
+
+Environment:
+  AUTOPILOT_MODEL            model for the run (default: your Claude Code default)
+  AUTOPILOT_PERMISSION_MODE  default: auto. If your org disables auto mode, use
+                             dontAsk plus allow rules, or bypassPermissions only in a disposable VM
+  AUTOPILOT_MAX_RESTARTS     restarts after the claude process exits early (default 20)
+  AUTOPILOT_BACKOFF_SECONDS  base wait between restarts (default 60, grows to 15 min)
+  AUTOPILOT_NO_CAFFEINATE=1  don't keep the machine awake
+  AUTOPILOT_CREDIT_CHECK_SECONDS  how often to re-check that usage credits are off (default 900)
+  AUTOPILOT_ALLOW_CREDITS=1  skip the usage-credits check (lets the run spend paid credits)
+EOF
+}
+
+cmd=${1:-}
+[ -z "$cmd" ] && { usage; exit 2; }
+DIR=$(cd "${2:-.}" && pwd -P)
+ST="$DIR/.autopilot"
+LOG="$ST/autopilot.log"
+EVENTS="$ST/events.jsonl"
+MAX_RESTARTS=${AUTOPILOT_MAX_RESTARTS:-20}
+BACKOFF=${AUTOPILOT_BACKOFF_SECONDS:-60}
+
+GOAL='Every acceptance criterion in SPEC.md is implemented and verified in this repository, and AUTOPILOT_DONE.md exists listing each criterion with the command you ran and its result. Rules for the whole run: work autonomously and never ask the user anything; when a decision is needed, choose the option most consistent with SPEC.md (prefer the simplest one that meets it), record it in DECISIONS.md with one line of reasoning, and continue. Keep PROGRESS.md current: criteria done with evidence, in progress, next. Run the verification command from SPEC.md after each meaningful change and fix failures at their root. Commit after each working step with a clear message. Stay inside this repository. When every criterion is verified and the repository has a remote, open a pull request from your branch with the /open-pr skill (it writes the PR doc with Mermaid diagrams) and put the PR URL in AUTOPILOT_DONE.md; never push to the default branch, never merge, never deploy or publish, never spend money. If you are truly blocked on something only a human can provide (a credential, paid access, a legal or product decision SPEC.md cannot settle), write AUTOPILOT_BLOCKED.md explaining exactly what is needed, and stop.'
+
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+log() { printf '%s  %s\n' "$(ts)" "$*" | tee -a "$LOG" >&2; }
+die() { printf 'autopilot: %s\n' "$*" >&2; exit 1; }
+alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+
+# Human-readable view of the stream-json events.
+render() {
+  jq --unbuffered -r '
+    if .type == "assistant" then
+      .message.content[]? |
+      if .type == "text" then "say   " + (.text | gsub("\\s+"; " ") | .[0:220])
+      elif .type == "tool_use" then "tool  " + .name + "  " + ((.input.command // .input.file_path // .input.description // .input.pattern // "") | tostring | gsub("\\s+"; " ") | .[0:160])
+      else empty end
+    elif .type == "result" then "end   " + (.subtype // "result") + (if .is_error then " (error)" else "" end)
+    elif .type == "system" and .subtype == "init" then "init  session " + .session_id
+    else empty end' 2>/dev/null
+}
+
+preflight() {
+  command -v claude >/dev/null 2>&1 || die "claude not found on PATH"
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  [ -f "$DIR/SPEC.md" ] || die "no SPEC.md in $DIR (run /autopilot-spec there first)"
+  git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1 || die "$DIR is not a git repository"
+  mkdir -p "$ST"
+  if ! grep -qxF '.autopilot/' "$DIR/.gitignore" 2>/dev/null; then
+    printf '.autopilot/\n' >>"$DIR/.gitignore"
+  fi
+}
+
+# Work on a branch, never on the default branch.
+ensure_branch() {
+  b=$(git -C "$DIR" branch --show-current)
+  case "$b" in
+    main | master | trunk | "")
+      nb="autopilot/$(date +%Y%m%d-%H%M)"
+      git -C "$DIR" switch -q -c "$nb" 2>/dev/null || git -C "$DIR" checkout -q -b "$nb"
+      log "working on new branch $nb (was ${b:-detached})"
+      ;;
+  esac
+}
+
+keep_awake() {
+  [ "${AUTOPILOT_NO_CAFFEINATE:-0}" = "1" ] && return 0
+  if command -v caffeinate >/dev/null 2>&1; then
+    caffeinate -dimsu -w $$ >/dev/null 2>&1 </dev/null &
+    log "keeping the machine awake (caffeinate) while the run lasts"
+  elif command -v systemd-inhibit >/dev/null 2>&1; then
+    systemd-inhibit --what=idle:sleep --why="claude autopilot" --mode=block sleep 2147483647 >/dev/null 2>&1 </dev/null &
+    INHIBIT_PID=$!
+    log "keeping the machine awake (systemd-inhibit) while the run lasts"
+  fi
+}
+
+# Billing check via `claude -p /usage` (a local command, no model call).
+# 0 = subscription window only, 1 = usage credits are on, 2 = could not confirm.
+check_billing() {
+  out=$(cd "$DIR" && claude -p "/usage" </dev/null 2>&1) || true
+  printf '%s\n' "$out" >"$ST/usage.txt"
+  if printf '%s' "$out" | grep -qiE 'usage credits|extra usage|using credits|credit balance'; then return 1; fi
+  if printf '%s' "$out" | grep -qi 'using your subscription'; then return 0; fi
+  return 2
+}
+
+require_subscription_only() {
+  [ "${AUTOPILOT_ALLOW_CREDITS:-0}" = "1" ] && return 0
+  rc=0
+  check_billing || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) die "usage credits are enabled on this account, so a long run could spend paid credits after the plan limit.
+Turn them off (Pro/Max: claude.ai/settings/usage; Team/Enterprise: ask an Owner), or set AUTOPILOT_ALLOW_CREDITS=1 to accept that.
+Details: $ST/usage.txt" ;;
+    *) die "could not confirm that usage is billed to your subscription window only (API key, usage-based plan, or /usage failed).
+Details: $ST/usage.txt. Set AUTOPILOT_ALLOW_CREDITS=1 to run anyway." ;;
+  esac
+}
+
+# Re-check billing during the run; stop at once if usage credits get turned on.
+credit_watch() {
+  [ "${AUTOPILOT_ALLOW_CREDITS:-0}" = "1" ] && return 0
+  runner=$$
+  (
+    sp=""
+    trap '[ -n "$sp" ] && kill "$sp" 2>/dev/null; exit 0' TERM INT
+    while :; do
+      sleep "${AUTOPILOT_CREDIT_CHECK_SECONDS:-900}" &
+      sp=$!
+      wait "$sp" || exit 0
+      sp=""
+      rc=0
+      check_billing || rc=$?
+      if [ "$rc" -eq 1 ]; then
+        log "usage credits were turned on during the run: stopping to avoid paid usage"
+        printf '# Blocked\n\nUsage credits were enabled during the run, so autopilot stopped to avoid paid usage. Turn them off (or set AUTOPILOT_ALLOW_CREDITS=1), delete this file, and run `autopilot start` again.\n' >"$DIR/AUTOPILOT_BLOCKED.md"
+        kill -TERM "$runner" 2>/dev/null
+        exit 0
+      fi
+    done
+  ) >/dev/null 2>&1 </dev/null &
+  WATCH_PID=$!
+}
+
+# Epoch seconds when a usage limit hit during the last attempt resets (empty if none).
+limit_reset_after() {
+  tail -n +"$(($1 + 1))" "$EVENTS" 2>/dev/null |
+    jq -r 'select(.type == "rate_limit_event" and .rate_limit_info.status == "rejected") | .rate_limit_info.resetsAt // empty' 2>/dev/null |
+    tail -1 | awk '{ v = $1; if (v > 100000000000) v = int(v / 1000); print int(v) }'
+}
+
+fmt_epoch() { date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$1"; }
+
+fingerprint() { # changes whenever Claude committed or edited something
+  { git -C "$DIR" rev-parse HEAD 2>/dev/null; git -C "$DIR" status --porcelain 2>/dev/null; } | cksum
+}
+
+do_run() {
+  preflight
+  if alive "$ST/runner.pid" && [ "$(cat "$ST/runner.pid")" != "$$" ]; then
+    die "already running (pid $(cat "$ST/runner.pid")); see: autopilot status"
+  fi
+  echo $$ >"$ST/runner.pid"
+  CPID="" INHIBIT_PID="" WATCH_PID=""
+  cleanup() {
+    [ -n "$CPID" ] && kill "$CPID" 2>/dev/null || true
+    [ -n "$WATCH_PID" ] && kill "$WATCH_PID" 2>/dev/null || true
+    [ -n "$INHIBIT_PID" ] && kill "$INHIBIT_PID" 2>/dev/null || true
+    rm -f "$ST/runner.pid" "$ST/claude.pid"
+  }
+  trap 'log "stopped by signal"; cleanup; exit 130' INT TERM
+  trap cleanup EXIT
+
+  require_subscription_only
+  ensure_branch
+  keep_awake
+  credit_watch
+  export CLAUDE_CODE_RETRY_WATCHDOG=1
+  export CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS=${CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS:-600000}
+  log "autopilot started in $DIR"
+
+  attempt=0 stalls=0
+  while :; do
+    if [ -f "$DIR/AUTOPILOT_DONE.md" ]; then log "DONE: see AUTOPILOT_DONE.md"; return 0; fi
+    if [ -f "$DIR/AUTOPILOT_BLOCKED.md" ]; then log "BLOCKED: see AUTOPILOT_BLOCKED.md"; return 3; fi
+    if [ "$attempt" -gt "$MAX_RESTARTS" ]; then log "giving up after $MAX_RESTARTS restarts"; return 1; fi
+
+    session=$(cat "$ST/session" 2>/dev/null || true)
+    set -- -p "/goal $GOAL" --permission-mode "${AUTOPILOT_PERMISSION_MODE:-auto}" --disallowedTools AskUserQuestion \
+      --permission-prompts none --output-format stream-json --verbose
+    if [ -n "$session" ]; then set -- "$@" --resume "$session"; else set -- "$@" --name "autopilot-$(basename "$DIR")"; fi
+    if [ -n "${AUTOPILOT_MODEL:-}" ]; then set -- "$@" --model "$AUTOPILOT_MODEL"; fi
+
+    before=$(fingerprint)
+    start_line=$(wc -l <"$EVENTS" 2>/dev/null | tr -d ' ' || echo 0)
+    [ -z "$start_line" ] && start_line=0
+    log "attempt $((attempt + 1)): claude ${session:+--resume $session}"
+    (cd "$DIR" && exec claude "$@" </dev/null >>"$EVENTS" 2>>"$ST/stderr.log") &
+    CPID=$!
+    echo "$CPID" >"$ST/claude.pid"
+    set +e
+    wait "$CPID"
+    rc=$?
+    set -e
+    CPID=""
+    if [ -z "$session" ]; then
+      session=$(jq -r 'select(.type == "system" and .subtype == "init") | .session_id' "$EVENTS" 2>/dev/null | tail -1)
+      [ -n "$session" ] && echo "$session" >"$ST/session"
+    fi
+    log "claude exited with status $rc"
+
+    if [ -f "$DIR/AUTOPILOT_DONE.md" ] || [ -f "$DIR/AUTOPILOT_BLOCKED.md" ]; then continue; fi
+    reset=$(limit_reset_after "$start_line")
+    now=$(date +%s)
+    if [ -n "$reset" ] && [ "$reset" -gt "$now" ]; then
+      require_subscription_only
+      log "usage limit reached; waiting for the window to reset at $(fmt_epoch "$reset") (no usage credits are used)"
+      sleep $((reset - now + ${AUTOPILOT_RESET_GRACE_SECONDS:-60}))
+      continue
+    fi
+    if [ "$(fingerprint)" = "$before" ]; then stalls=$((stalls + 1)); else stalls=0; fi
+    if [ "$stalls" -ge 3 ]; then
+      log "no progress in 3 consecutive runs; writing AUTOPILOT_BLOCKED.md"
+      printf '# Blocked\n\nAutopilot made no changes in 3 consecutive runs. Check .autopilot/stderr.log and `autopilot log`, then fix the cause and run `autopilot start` again (delete this file first).\n' >"$DIR/AUTOPILOT_BLOCKED.md"
+      continue
+    fi
+    attempt=$((attempt + 1))
+    wait_s=$((BACKOFF * attempt))
+    [ "$wait_s" -gt 900 ] && wait_s=900
+    log "goal not finished; resuming the same session in ${wait_s}s"
+    sleep "$wait_s"
+  done
+}
+
+case "$cmd" in
+  run) do_run ;;
+  start)
+    preflight
+    require_subscription_only
+    alive "$ST/runner.pid" && die "already running (pid $(cat "$ST/runner.pid"))"
+    nohup "$0" run "$DIR" >>"$LOG" 2>&1 </dev/null &
+    echo $! >"$ST/runner.pid"
+    echo "autopilot running in the background (pid $!)."
+    echo "  watch:  autopilot log $DIR"
+    echo "  state:  autopilot status $DIR"
+    echo "  stop:   autopilot stop $DIR"
+    ;;
+  status)
+    if alive "$ST/runner.pid"; then echo "state:    running (pid $(cat "$ST/runner.pid"))"
+    elif [ -f "$DIR/AUTOPILOT_DONE.md" ]; then echo "state:    done (AUTOPILOT_DONE.md)"
+    elif [ -f "$DIR/AUTOPILOT_BLOCKED.md" ]; then echo "state:    blocked (AUTOPILOT_BLOCKED.md)"
+    else echo "state:    not running"; fi
+    echo "session:  $(cat "$ST/session" 2>/dev/null || echo -)"
+    echo "branch:   $(git -C "$DIR" branch --show-current 2>/dev/null)"
+    echo "commits:  $(git -C "$DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
+    if [ -f "$LOG" ]; then echo; echo "runner:"; tail -5 "$LOG" | sed 's/^/  /'; fi
+    if [ -f "$EVENTS" ]; then echo; echo "recent activity:"; tail -400 "$EVENTS" | render | tail -8 | sed 's/^/  /'; fi
+    if [ -f "$DIR/PROGRESS.md" ]; then echo; echo "PROGRESS.md:"; head -30 "$DIR/PROGRESS.md" | sed 's/^/  /'; fi
+    ;;
+  log)
+    [ -f "$EVENTS" ] || die "no activity yet in $DIR"
+    tail -n 50 -f "$EVENTS" | render
+    ;;
+  stop)
+    if alive "$ST/runner.pid"; then
+      kill "$(cat "$ST/runner.pid")" && echo "stopped (resume later with: autopilot start $DIR)"
+    else
+      echo "not running"
+    fi
+    ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

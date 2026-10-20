@@ -23,7 +23,7 @@ If the queue is empty, say so in one line and stop. Do not invent work.
 ## 3. Verify, then ship
 - Run the project's checks; delegate long runs to the `verifier` subagent. Fix failures at the root.
 - For non-trivial changes, run the `reviewer` subagent against the issue text and fix real findings.
-- Commit, push the branch, and open a PR that links the task (`Closes #<n>`) and includes the verification evidence.
+- Commit, then open the PR with /open-pr (it writes the PR doc with Mermaid diagrams, pushes the branch, and links the task with `Closes #<n>`).
 - Update the queue: on GitHub, replace `agent-ready` with `agent-pr-open`; in TASKS.md move the item to `## Review` with the PR link.
 
 ## 4. Report
