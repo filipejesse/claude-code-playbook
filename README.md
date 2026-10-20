@@ -35,6 +35,7 @@ All of it lives in [`home/`](home/), which is symlinked to `~/.claude/playbook`,
 | [`statusline.sh`](home/statusline.sh) | Model · repo@branch · context % (color-coded) · cost · plan windows. |
 | Agents: [`reviewer`](home/agents/reviewer.md), [`verifier`](home/agents/verifier.md), [`researcher`](home/agents/researcher.md) | Fresh-context review against the plan; checks with evidence and short output; sourced research. |
 | Skills: [`/bootstrap-project`](home/skills/bootstrap-project/SKILL.md), [`/handoff`](home/skills/handoff/SKILL.md), [`/next-task`](home/skills/next-task/SKILL.md) | Set up a repo for Claude; hand work to a fresh session; pull, implement, verify and PR the next queued task. |
+| [`autopilot`](home/bin/autopilot) + [`/autopilot-spec`](home/skills/autopilot-spec/SKILL.md) | Describe a project once, then Claude builds it unattended until every acceptance criterion is verified, waiting out usage limits and resuming on its own. Linked to `~/.local/bin/autopilot`. |
 | [`loop.md`](home/loop.md) | What a bare `/loop` does: continue → tend the PR → next task → stop. |
 | [`templates/project/`](home/templates/project/) | Project `CLAUDE.md`, `.claude/settings.json`, `.worktreeinclude`, `TASKS.md`. |
 
@@ -48,6 +49,7 @@ All of it lives in [`home/`](home/), which is symlinked to `~/.claude/playbook`,
 6. [Keeping agents busy](docs/06-keeping-agents-busy.md): queues, `/loop`, `/goal`, scheduled tasks, usage windows
 7. [Cost and usage](docs/07-cost-and-usage.md): what drives spend and the levers that matter
 8. [Staying current](docs/08-staying-current.md): how this repo keeps itself up to date
+9. [Autopilot](docs/09-autopilot.md): build a whole project unattended, through usage limits
 
 ## A day with this setup
 

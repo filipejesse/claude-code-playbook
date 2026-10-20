@@ -42,6 +42,10 @@ Example: drain the queue overnight in the cloud.
 ```
 For cloud runs the skill must live in the repo, since a cloud session only sees a fresh clone. Copy `next-task` into the repo's `.claude/skills/`, or write the steps into the prompt.
 
+## Whole projects, unattended
+
+For a new project with a clear end state, use [Autopilot](09-autopilot.md): one interview, then Claude works until the spec is verified, waiting out usage limits by itself.
+
 ## Using the capacity you have (without wasting it)
 
 On Team and Enterprise plans, each seat has an allowance that resets on a rolling **5-hour window** and a **weekly** window, shared with Claude chat. "Don't let agents rest" means aiming parallel work at the windows:

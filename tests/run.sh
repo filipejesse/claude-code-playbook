@@ -35,6 +35,7 @@ check "playbook dir links to checkout" "[ \"\$(readlink '$CLAUDE_DIR/playbook')\
 check "agents linked" "[ -L '$CLAUDE_DIR/agents/reviewer.md' ] && [ -f '$CLAUDE_DIR/agents/reviewer.md' ]"
 check "skills linked" "[ -f '$CLAUDE_DIR/skills/next-task/SKILL.md' ]"
 check "loop.md linked" "[ -f '$CLAUDE_DIR/loop.md' ]"
+check "autopilot on PATH dir" "[ -x '$HOME/.local/bin/autopilot' ]"
 check "CLAUDE.md imports playbook" "grep -qx '@~/.claude/playbook/CLAUDE.md' '$CLAUDE_DIR/CLAUDE.md'"
 check "settings has statusLine" "jq -e '.statusLine.command | endswith(\"/playbook/statusline.sh\")' '$CLAUDE_DIR/settings.json' >/dev/null"
 check "settings has guard hook" "jq -e '[.hooks.PreToolUse[].hooks[].command] | any(endswith(\"guard-bash.sh\"))' '$CLAUDE_DIR/settings.json' >/dev/null"
@@ -120,6 +121,50 @@ out=$(printf '%s' '{"model":{"display_name":"Opus"},"workspace":{"current_dir":"
 check "full input" "printf '%s' \"\$out\" | grep -q 'Opus · demo' && printf '%s' \"\$out\" | grep -q 'ctx 72%' && printf '%s' \"\$out\" | grep -q '\\\$1.50' && printf '%s' \"\$out\" | grep -q '5h 23% · 7d 41%'"
 out=$(printf '%s' '{"model":{"display_name":"Sonnet"}}' | "$SL")
 check "minimal input" "[ \"\$out\" = 'Sonnet' ]"
+
+echo "Autopilot"
+AP="$REPO/home/bin/autopilot"
+STUB=$(mktemp -d)
+cat >"$STUB/claude" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s | watchdog=%s\n' "$*" "${CLAUDE_CODE_RETRY_WATCHDOG:-}" >>"$STUB_LOG"
+n=$(wc -l <"$STUB_LOG" | tr -d ' ')
+echo '{"type":"system","subtype":"init","session_id":"sess-123"}'
+if [ "$STUB_MODE" = "done-second" ]; then
+  echo "work $n" >>work.txt
+  [ "$n" -ge 2 ] && echo done >AUTOPILOT_DONE.md
+fi
+exit 1
+EOF2
+chmod +x "$STUB/claude"
+new_project() {
+  P=$(mktemp -d)
+  git -C "$P" init -q -b main
+  echo "# spec" >"$P/SPEC.md"
+  git -C "$P" add . && git -C "$P" -c user.name=t -c user.email=t@t commit -qm init
+  export STUB_LOG="$P/calls.log"
+  : >"$STUB_LOG"
+}
+apr() { PATH="$STUB:$PATH" AUTOPILOT_NO_CAFFEINATE=1 AUTOPILOT_BACKOFF_SECONDS=0 "$AP" "$@" >/dev/null 2>&1; }
+
+P=$(mktemp -d)
+check "refuses without SPEC.md" "! apr run '$P'"
+
+new_project
+STUB_MODE=done-second apr run "$P"; rc=$?
+check "finishes when AUTOPILOT_DONE.md appears" "[ $rc -eq 0 ] && [ -f '$P/AUTOPILOT_DONE.md' ]"
+check "resumed the same session after an early exit" "[ \"\$(wc -l <'$P/calls.log' | tr -d ' ')\" = 2 ] && sed -n 2p '$P/calls.log' | grep -q -- '--resume sess-123'"
+check "first run sets the goal, auto mode, no questions" "head -1 '$P/calls.log' | grep -q -- '/goal Every acceptance criterion' && head -1 '$P/calls.log' | grep -q -- '--permission-mode auto' && head -1 '$P/calls.log' | grep -q -- '--disallowedTools AskUserQuestion'"
+check "usage-limit watchdog enabled" "grep -q 'watchdog=1' '$P/calls.log'"
+check "works on an autopilot/ branch, not main" "git -C '$P' branch --show-current | grep -q '^autopilot/'"
+check "gitignores its state dir" "grep -qx '.autopilot/' '$P/.gitignore'"
+st=$(PATH="$STUB:$PATH" "$AP" status "$P" 2>&1)
+check "status reports done" "printf '%s' \"\$st\" | grep -q 'state:    done'"
+check "no pid files left behind" "[ ! -f '$P/.autopilot/runner.pid' ] && [ ! -f '$P/.autopilot/claude.pid' ]"
+
+new_project
+STUB_MODE=stall apr run "$P"; rc=$?
+check "stops as blocked after 3 runs without progress" "[ $rc -eq 3 ] && [ -f '$P/AUTOPILOT_BLOCKED.md' ] && [ \"\$(wc -l <'$P/calls.log' | tr -d ' ')\" = 3 ]"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
