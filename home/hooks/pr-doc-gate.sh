@@ -17,6 +17,7 @@ is_pr_create() {
   while [ "$#" -gt 0 ]; do
     case "$1" in sudo | command | env | nohup | time) shift ;; *=*) shift ;; *) break ;; esac
   done
+  [ "$#" -ge 3 ] || return 1 # also covers empty segments (set -u would abort on $1)
   [ "${1##*/}" = "gh" ] && [ "${2:-}" = "pr" ] && [ "${3:-}" = "create" ]
 }
 found=0
