@@ -54,6 +54,7 @@ check_segment() {
     cd) # follow `cd dir && ...` so later checks look at the right repository
       t=${1:-$HOME}
       t=${t%\"} t=${t#\"} t=${t%\'} t=${t#\'}
+      # shellcheck disable=SC2088 # matching a literal ~ in the command text
       case "$t" in "~" | "~/"*) t="$HOME${t#\~}" ;; esac
       case "$t" in /*) ;; *) t="$CWD/$t" ;; esac
       if [ -d "$t" ]; then CWD=$(cd "$t" && pwd -P); fi

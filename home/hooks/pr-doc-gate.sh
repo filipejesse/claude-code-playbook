@@ -20,6 +20,7 @@ is_pr_create() {
   [ "${1##*/}" = "gh" ] && [ "${2:-}" = "pr" ] && [ "${3:-}" = "create" ]
 }
 found=0
+segments=$(printf '%s\n' "$cmd" | tr ';&|' '\n\n\n')
 while IFS= read -r seg; do
   set -f
   # shellcheck disable=SC2086
@@ -27,13 +28,14 @@ while IFS= read -r seg; do
   set +f
   if [ "${1:-}" = "cd" ]; then # follow `cd dir && ...`
     t=${2:-$HOME}
+    # shellcheck disable=SC2088 # matching a literal ~ in the command text
     case "$t" in "~" | "~/"*) t="$HOME${t#\~}" ;; esac
     case "$t" in /*) ;; *) t="$cwd/$t" ;; esac
     if [ -d "$t" ]; then cwd=$(cd "$t" && pwd -P); fi
   fi
   if is_pr_create "$seg"; then found=1; break; fi
 done <<EOF
-$(printf '%s\n' "$cmd" | tr ';&|' '\n\n\n')
+$segments
 EOF
 [ "$found" -eq 1 ] || exit 0
 git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1 || exit 0
