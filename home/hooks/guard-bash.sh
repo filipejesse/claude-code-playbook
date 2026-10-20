@@ -16,6 +16,8 @@ block() {
 }
 
 is_dangerous_target() {
+  # literal ~ and $HOME are what we are matching in the command text
+  # shellcheck disable=SC2088,SC2016
   case "$1" in
     / | /\* | '~' | '~/' | '~/*' | '$HOME' | '$HOME/' | '$HOME/*' | '${HOME}' | '${HOME}/' | '${HOME}/*' \
       | '"$HOME"' | '"$HOME/"' | '"${HOME}"' | . | ./ | .. | ../ | \*)

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Test suite: runs everything against a throwaway HOME, never your real ~/.claude.
-set -uo pipefail
 # Variables like $before and $out are read inside the eval strings passed to check().
 # shellcheck disable=SC2034
+# Test suite: runs everything against a throwaway HOME, never your real ~/.claude.
+set -uo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 PASS=0 FAIL=0
