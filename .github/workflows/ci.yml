@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq
+        if: runner.os == 'Linux'
+        run: command -v jq || (sudo apt-get update && sudo apt-get install -y jq)
+      - name: Tests
+        run: tests/run.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck --severity=warning install.sh tests/run.sh home/statusline.sh home/hooks/*.sh

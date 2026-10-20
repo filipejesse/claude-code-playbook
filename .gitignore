@@ -1,0 +1,5 @@
+.DS_Store
+.claude/worktrees/
+.claude/settings.local.json
+CLAUDE.local.md
+HANDOFF.md

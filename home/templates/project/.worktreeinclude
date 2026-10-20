@@ -1,0 +1,4 @@
+# Gitignored files copied into every worktree Claude creates (.gitignore syntax).
+# Only files that are BOTH matched here AND gitignored are copied.
+.env
+.env.local
