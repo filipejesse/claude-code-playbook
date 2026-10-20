@@ -3,6 +3,7 @@
 # - /goal keeps Claude working turn after turn until the spec is verified
 # - auto mode + no AskUserQuestion: Claude decides, records decisions, keeps going
 # - CLAUDE_CODE_RETRY_WATCHDOG waits out usage limits (session and weekly) and resumes
+# - never spends usage credits: refuses to start, and stops, if usage credits are enabled
 # - the machine is kept awake; if the claude process dies, it is resumed (same session)
 set -euo pipefail
 
@@ -27,6 +28,8 @@ Environment:
   AUTOPILOT_MAX_RESTARTS     restarts after the claude process exits early (default 20)
   AUTOPILOT_BACKOFF_SECONDS  base wait between restarts (default 60, grows to 15 min)
   AUTOPILOT_NO_CAFFEINATE=1  don't keep the machine awake
+  AUTOPILOT_CREDIT_CHECK_SECONDS  how often to re-check that usage credits are off (default 900)
+  AUTOPILOT_ALLOW_CREDITS=1  skip the usage-credits check (lets the run spend paid credits)
 EOF
 }
 
@@ -39,7 +42,7 @@ EVENTS="$ST/events.jsonl"
 MAX_RESTARTS=${AUTOPILOT_MAX_RESTARTS:-20}
 BACKOFF=${AUTOPILOT_BACKOFF_SECONDS:-60}
 
-GOAL='Every acceptance criterion in SPEC.md is implemented and verified in this repository, and AUTOPILOT_DONE.md exists listing each criterion with the command you ran and its result. Rules for the whole run: work autonomously and never ask the user anything; when a decision is needed, choose the option most consistent with SPEC.md (prefer the simplest one that meets it), record it in DECISIONS.md with one line of reasoning, and continue. Keep PROGRESS.md current: criteria done with evidence, in progress, next. Run the verification command from SPEC.md after each meaningful change and fix failures at their root. Commit after each working step with a clear message. Stay inside this repository; never deploy, publish, push to a remote, or spend money. If you are truly blocked on something only a human can provide (a credential, paid access, a legal or product decision SPEC.md cannot settle), write AUTOPILOT_BLOCKED.md explaining exactly what is needed, and stop.'
+GOAL='Every acceptance criterion in SPEC.md is implemented and verified in this repository, and AUTOPILOT_DONE.md exists listing each criterion with the command you ran and its result. Rules for the whole run: work autonomously and never ask the user anything; when a decision is needed, choose the option most consistent with SPEC.md (prefer the simplest one that meets it), record it in DECISIONS.md with one line of reasoning, and continue. Keep PROGRESS.md current: criteria done with evidence, in progress, next. Run the verification command from SPEC.md after each meaningful change and fix failures at their root. Commit after each working step with a clear message. Stay inside this repository. When every criterion is verified and the repository has a remote, open a pull request from your branch with the /open-pr skill (it writes the PR doc with Mermaid diagrams) and put the PR URL in AUTOPILOT_DONE.md; never push to the default branch, never merge, never deploy or publish, never spend money. If you are truly blocked on something only a human can provide (a credential, paid access, a legal or product decision SPEC.md cannot settle), write AUTOPILOT_BLOCKED.md explaining exactly what is needed, and stop.'
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { printf '%s  %s\n' "$(ts)" "$*" | tee -a "$LOG" >&2; }
@@ -85,14 +88,72 @@ ensure_branch() {
 keep_awake() {
   [ "${AUTOPILOT_NO_CAFFEINATE:-0}" = "1" ] && return 0
   if command -v caffeinate >/dev/null 2>&1; then
-    caffeinate -dimsu -w $$ &
+    caffeinate -dimsu -w $$ >/dev/null 2>&1 </dev/null &
     log "keeping the machine awake (caffeinate) while the run lasts"
   elif command -v systemd-inhibit >/dev/null 2>&1; then
-    systemd-inhibit --what=idle:sleep --why="claude autopilot" --mode=block sleep 2147483647 &
+    systemd-inhibit --what=idle:sleep --why="claude autopilot" --mode=block sleep 2147483647 >/dev/null 2>&1 </dev/null &
     INHIBIT_PID=$!
     log "keeping the machine awake (systemd-inhibit) while the run lasts"
   fi
 }
+
+# Billing check via `claude -p /usage` (a local command, no model call).
+# 0 = subscription window only, 1 = usage credits are on, 2 = could not confirm.
+check_billing() {
+  out=$(cd "$DIR" && claude -p "/usage" </dev/null 2>&1) || true
+  printf '%s\n' "$out" >"$ST/usage.txt"
+  if printf '%s' "$out" | grep -qiE 'usage credits|extra usage|using credits|credit balance'; then return 1; fi
+  if printf '%s' "$out" | grep -qi 'using your subscription'; then return 0; fi
+  return 2
+}
+
+require_subscription_only() {
+  [ "${AUTOPILOT_ALLOW_CREDITS:-0}" = "1" ] && return 0
+  rc=0
+  check_billing || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) die "usage credits are enabled on this account, so a long run could spend paid credits after the plan limit.
+Turn them off (Pro/Max: claude.ai/settings/usage; Team/Enterprise: ask an Owner), or set AUTOPILOT_ALLOW_CREDITS=1 to accept that.
+Details: $ST/usage.txt" ;;
+    *) die "could not confirm that usage is billed to your subscription window only (API key, usage-based plan, or /usage failed).
+Details: $ST/usage.txt. Set AUTOPILOT_ALLOW_CREDITS=1 to run anyway." ;;
+  esac
+}
+
+# Re-check billing during the run; stop at once if usage credits get turned on.
+credit_watch() {
+  [ "${AUTOPILOT_ALLOW_CREDITS:-0}" = "1" ] && return 0
+  runner=$$
+  (
+    sp=""
+    trap '[ -n "$sp" ] && kill "$sp" 2>/dev/null; exit 0' TERM INT
+    while :; do
+      sleep "${AUTOPILOT_CREDIT_CHECK_SECONDS:-900}" &
+      sp=$!
+      wait "$sp" || exit 0
+      sp=""
+      rc=0
+      check_billing || rc=$?
+      if [ "$rc" -eq 1 ]; then
+        log "usage credits were turned on during the run: stopping to avoid paid usage"
+        printf '# Blocked\n\nUsage credits were enabled during the run, so autopilot stopped to avoid paid usage. Turn them off (or set AUTOPILOT_ALLOW_CREDITS=1), delete this file, and run `autopilot start` again.\n' >"$DIR/AUTOPILOT_BLOCKED.md"
+        kill -TERM "$runner" 2>/dev/null
+        exit 0
+      fi
+    done
+  ) >/dev/null 2>&1 </dev/null &
+  WATCH_PID=$!
+}
+
+# Epoch seconds when a usage limit hit during the last attempt resets (empty if none).
+limit_reset_after() {
+  tail -n +"$(($1 + 1))" "$EVENTS" 2>/dev/null |
+    jq -r 'select(.type == "rate_limit_event" and .rate_limit_info.status == "rejected") | .rate_limit_info.resetsAt // empty' 2>/dev/null |
+    tail -1 | awk '{ v = $1; if (v > 100000000000) v = int(v / 1000); print int(v) }'
+}
+
+fmt_epoch() { date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$1"; }
 
 fingerprint() { # changes whenever Claude committed or edited something
   { git -C "$DIR" rev-parse HEAD 2>/dev/null; git -C "$DIR" status --porcelain 2>/dev/null; } | cksum
@@ -104,17 +165,20 @@ do_run() {
     die "already running (pid $(cat "$ST/runner.pid")); see: autopilot status"
   fi
   echo $$ >"$ST/runner.pid"
-  CPID="" INHIBIT_PID=""
+  CPID="" INHIBIT_PID="" WATCH_PID=""
   cleanup() {
     [ -n "$CPID" ] && kill "$CPID" 2>/dev/null || true
+    [ -n "$WATCH_PID" ] && kill "$WATCH_PID" 2>/dev/null || true
     [ -n "$INHIBIT_PID" ] && kill "$INHIBIT_PID" 2>/dev/null || true
     rm -f "$ST/runner.pid" "$ST/claude.pid"
   }
   trap 'log "stopped by signal"; cleanup; exit 130' INT TERM
   trap cleanup EXIT
 
+  require_subscription_only
   ensure_branch
   keep_awake
+  credit_watch
   export CLAUDE_CODE_RETRY_WATCHDOG=1
   export CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS=${CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS:-600000}
   log "autopilot started in $DIR"
@@ -127,11 +191,13 @@ do_run() {
 
     session=$(cat "$ST/session" 2>/dev/null || true)
     set -- -p "/goal $GOAL" --permission-mode "${AUTOPILOT_PERMISSION_MODE:-auto}" --disallowedTools AskUserQuestion \
-      --output-format stream-json --verbose
+      --permission-prompts none --output-format stream-json --verbose
     if [ -n "$session" ]; then set -- "$@" --resume "$session"; else set -- "$@" --name "autopilot-$(basename "$DIR")"; fi
     if [ -n "${AUTOPILOT_MODEL:-}" ]; then set -- "$@" --model "$AUTOPILOT_MODEL"; fi
 
     before=$(fingerprint)
+    start_line=$(wc -l <"$EVENTS" 2>/dev/null | tr -d ' ' || echo 0)
+    [ -z "$start_line" ] && start_line=0
     log "attempt $((attempt + 1)): claude ${session:+--resume $session}"
     (cd "$DIR" && exec claude "$@" </dev/null >>"$EVENTS" 2>>"$ST/stderr.log") &
     CPID=$!
@@ -148,6 +214,14 @@ do_run() {
     log "claude exited with status $rc"
 
     if [ -f "$DIR/AUTOPILOT_DONE.md" ] || [ -f "$DIR/AUTOPILOT_BLOCKED.md" ]; then continue; fi
+    reset=$(limit_reset_after "$start_line")
+    now=$(date +%s)
+    if [ -n "$reset" ] && [ "$reset" -gt "$now" ]; then
+      require_subscription_only
+      log "usage limit reached; waiting for the window to reset at $(fmt_epoch "$reset") (no usage credits are used)"
+      sleep $((reset - now + ${AUTOPILOT_RESET_GRACE_SECONDS:-60}))
+      continue
+    fi
     if [ "$(fingerprint)" = "$before" ]; then stalls=$((stalls + 1)); else stalls=0; fi
     if [ "$stalls" -ge 3 ]; then
       log "no progress in 3 consecutive runs; writing AUTOPILOT_BLOCKED.md"
@@ -166,6 +240,7 @@ case "$cmd" in
   run) do_run ;;
   start)
     preflight
+    require_subscription_only
     alive "$ST/runner.pid" && die "already running (pid $(cat "$ST/runner.pid"))"
     nohup "$0" run "$DIR" >>"$LOG" 2>&1 </dev/null &
     echo $! >"$ST/runner.pid"

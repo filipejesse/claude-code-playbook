@@ -38,6 +38,7 @@ check "loop.md linked" "[ -f '$CLAUDE_DIR/loop.md' ]"
 check "autopilot on PATH dir" "[ -x '$HOME/.local/bin/autopilot' ]"
 check "CLAUDE.md imports playbook" "grep -qx '@~/.claude/playbook/CLAUDE.md' '$CLAUDE_DIR/CLAUDE.md'"
 check "settings has statusLine" "jq -e '.statusLine.command | endswith(\"/playbook/statusline.sh\")' '$CLAUDE_DIR/settings.json' >/dev/null"
+check "settings has PR doc gate" "jq -e '[.hooks.PreToolUse[].hooks[].command] | any(endswith(\"pr-doc-gate.sh\"))' '$CLAUDE_DIR/settings.json' >/dev/null"
 check "settings has guard hook" "jq -e '[.hooks.PreToolUse[].hooks[].command] | any(endswith(\"guard-bash.sh\"))' '$CLAUDE_DIR/settings.json' >/dev/null"
 check "no unresolved placeholder" "! grep -q __PLAYBOOK__ '$CLAUDE_DIR/settings.json'"
 check "hook scripts executable" "[ -x '$CLAUDE_DIR/playbook/hooks/guard-bash.sh' ] && [ -x '$CLAUDE_DIR/playbook/statusline.sh' ]"
@@ -105,15 +106,69 @@ check "leaves it alone" "[ -f '$CLAUDE_DIR/playbook/note' ]"
 
 echo "Guard hook"
 G="$REPO/home/hooks/guard-bash.sh"
-guard() { printf '{"tool_input":{"command":%s}}' "$(jq -Rn --arg c "$1" '$c')" | "$G" >/dev/null 2>&1; }
+GR=$(mktemp -d)
+git -C "$GR" init -q -b main
+git -C "$GR" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+guard() { jq -n --arg c "$1" --arg d "${2:-$GR}" '{tool_input: {command: $c}, cwd: $d}' | "$G" >/dev/null 2>&1; }
 for c in 'rm -rf /' 'rm -rf ~' 'rm -fr ~/' 'sudo rm -r -f /' 'rm -rf $HOME' 'cd x && rm -rf .' 'git push --force origin main' 'git push -f' 'git push origin +main' 'rm --recursive /*'; do
   guard "$c"; rc=$?
   check "blocks: $c" "[ $rc -eq 2 ]"
 done
-for c in 'ls -la' 'rm -rf ./build' 'rm -rf node_modules dist' 'rm file.txt' 'git push origin feature/x' 'git push --force-with-lease origin feature/x' 'echo "rm -rf is dangerous"' 'grep -rf patterns /'; do
+for c in 'git push origin main' 'git push -u origin HEAD:master' 'git push' 'git push origin HEAD'; do
+  guard "$c"; rc=$?
+  check "blocks default-branch push (on main): $c" "[ $rc -eq 2 ]"
+done
+git -C "$GR" switch -q -c feature/x
+for c in 'git push' 'git push -u origin feature/x' 'git push origin HEAD'; do
+  guard "$c"; rc=$?
+  check "allows feature-branch push: $c" "[ $rc -eq 0 ]"
+done
+guard "cd '$GR' && git push" "$(mktemp -d)"; rc=$?
+check "follows cd into a feature-branch repo before judging a push" "[ $rc -eq 0 ]"
+GM=$(mktemp -d)
+git -C "$GM" init -q -b main
+guard "cd $GM && git push" "$GR"; rc=$?
+check "follows cd into a repo on main and blocks" "[ $rc -eq 2 ]"
+guard "git -C $GM push" "$GR"; rc=$?
+check "honors git -C when judging a push" "[ $rc -eq 2 ]"
+for c in 'ls -la' 'rm -rf ./build''rm -rf node_modules dist' 'rm file.txt' 'git push origin feature/x' 'git push --force-with-lease origin feature/x' 'echo "rm -rf is dangerous"' 'grep -rf patterns /'; do
   guard "$c"; rc=$?
   check "allows: $c" "[ $rc -eq 0 ]"
 done
+
+echo "PR doc gate"
+PG="$REPO/home/hooks/pr-doc-gate.sh"
+PR=$(mktemp -d)
+git -C "$PR" init -q -b main
+git -C "$PR" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$PR" switch -q -c feature/y
+echo x >"$PR/a.txt" && git -C "$PR" add a.txt && git -C "$PR" -c user.name=t -c user.email=t@t commit -qm change
+gate() { jq -n --arg c "$1" --arg d "$PR" '{tool_input: {command: $c}, cwd: $d}' | "$PG" >/dev/null 2>&1; }
+gate 'gh pr create --title x --body y'; rc=$?
+check "blocks gh pr create without a PR doc" "[ $rc -eq 2 ]"
+gate 'git status'; rc=$?
+check "ignores other commands" "[ $rc -eq 0 ]"
+mkdir -p "$PR/docs/pr" && printf '# x\n```mermaid\nflowchart LR\n  a-->b\n```\n' >"$PR/docs/pr/2026-10-20-feature-y.md"
+git -C "$PR" add docs && git -C "$PR" -c user.name=t -c user.email=t@t commit -qm doc
+gate 'gh pr create --base main --title x'; rc=$?
+check "blocks a PR doc without a sequenceDiagram" "[ $rc -eq 2 ]"
+printf '# x\n```mermaid\nsequenceDiagram\n  A->>B: hi\n```\n' >"$PR/docs/pr/2026-10-20-feature-y.md"
+gate 'gh pr create --base main --title x'; rc=$?
+check "blocks an uncommitted PR doc" "[ $rc -eq 2 ]"
+git -C "$PR" -c user.name=t -c user.email=t@t commit -qam "doc diagrams"
+gate 'gh pr create --base main --title x'; rc=$?
+check "allows once the doc with a sequenceDiagram is committed" "[ $rc -eq 0 ]"
+gate 'cd sub && gh pr create -B main'; rc=$?
+check "detects gh pr create inside compound commands" "[ $rc -eq 0 ]"
+git -C "$PR" switch -q -c feature/z main
+gate 'claude -p "then run gh pr create --title t"'; rc=$?
+check "ignores gh pr create inside a quoted argument" "[ $rc -eq 0 ]"
+gate 'git add . && gh pr create --title t'; rc=$?
+check "blocks gh pr create after && on a branch without a doc" "[ $rc -eq 2 ]"
+jq -n --arg c "cd $PR && gh pr create --title t" --arg d "$(mktemp -d)" '{tool_input: {command: $c}, cwd: $d}' | "$PG" >/dev/null 2>&1; rc=$?
+check "follows cd into the repo before checking for the doc" "[ $rc -eq 2 ]"
+PLAYBOOK_PR_DOC=0 jq -n --arg d "$(mktemp -d)" '{tool_input: {command: "gh pr create"}, cwd: $d}' | PLAYBOOK_PR_DOC=0 "$PG" >/dev/null 2>&1; rc=$?
+check "PLAYBOOK_PR_DOC=0 opts out" "[ $rc -eq 0 ]"
 
 echo "Status line"
 SL="$REPO/home/statusline.sh"
@@ -127,13 +182,28 @@ AP="$REPO/home/bin/autopilot"
 STUB=$(mktemp -d)
 cat >"$STUB/claude" <<'EOF2'
 #!/usr/bin/env bash
+if [ "${2:-}" = "/usage" ]; then
+  case "${STUB_USAGE:-subscription}" in
+    subscription) echo "You are currently using your subscription to power your Claude Code usage" ;;
+    credits) printf 'You are currently using your subscription to power your Claude Code usage\nUsage credits: $12.00 spent this month\n' ;;
+    api) echo "You are using an API key" ;;
+  esac
+  exit 0
+fi
 printf '%s | watchdog=%s\n' "$*" "${CLAUDE_CODE_RETRY_WATCHDOG:-}" >>"$STUB_LOG"
 n=$(wc -l <"$STUB_LOG" | tr -d ' ')
 echo '{"type":"system","subtype":"init","session_id":"sess-123"}'
-if [ "$STUB_MODE" = "done-second" ]; then
-  echo "work $n" >>work.txt
-  [ "$n" -ge 2 ] && echo done >AUTOPILOT_DONE.md
-fi
+case "$STUB_MODE" in
+  done-second)
+    echo "work $n" >>work.txt
+    [ "$n" -ge 2 ] && echo done >AUTOPILOT_DONE.md ;;
+  limit)
+    if [ "$n" -eq 1 ]; then
+      printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":%s}}\n' "$(($(date +%s) + 2))"
+    else
+      echo done >AUTOPILOT_DONE.md
+    fi ;;
+esac
 exit 1
 EOF2
 chmod +x "$STUB/claude"
@@ -145,7 +215,7 @@ new_project() {
   export STUB_LOG="$P/calls.log"
   : >"$STUB_LOG"
 }
-apr() { PATH="$STUB:$PATH" AUTOPILOT_NO_CAFFEINATE=1 AUTOPILOT_BACKOFF_SECONDS=0 "$AP" "$@" >/dev/null 2>&1; }
+apr() { PATH="$STUB:$PATH" AUTOPILOT_NO_CAFFEINATE=1 AUTOPILOT_BACKOFF_SECONDS=0 AUTOPILOT_RESET_GRACE_SECONDS=0 "$AP" "$@" >/dev/null 2>&1; }
 
 P=$(mktemp -d)
 check "refuses without SPEC.md" "! apr run '$P'"
@@ -154,13 +224,34 @@ new_project
 STUB_MODE=done-second apr run "$P"; rc=$?
 check "finishes when AUTOPILOT_DONE.md appears" "[ $rc -eq 0 ] && [ -f '$P/AUTOPILOT_DONE.md' ]"
 check "resumed the same session after an early exit" "[ \"\$(wc -l <'$P/calls.log' | tr -d ' ')\" = 2 ] && sed -n 2p '$P/calls.log' | grep -q -- '--resume sess-123'"
-check "first run sets the goal, auto mode, no questions" "head -1 '$P/calls.log' | grep -q -- '/goal Every acceptance criterion' && head -1 '$P/calls.log' | grep -q -- '--permission-mode auto' && head -1 '$P/calls.log' | grep -q -- '--disallowedTools AskUserQuestion'"
+check "first run sets the goal, auto mode, no questions" "head -1 '$P/calls.log' | grep -q -- '/goal Every acceptance criterion' && head -1 '$P/calls.log' | grep -q -- '--permission-mode auto' && head -1 '$P/calls.log' | grep -q -- '--disallowedTools AskUserQuestion' && head -1 '$P/calls.log' | grep -q -- '--permission-prompts none'"
+check "goal allows PRs with the PR doc, forbids default-branch pushes" "head -1 '$P/calls.log' | grep -q -- '/open-pr' && head -1 '$P/calls.log' | grep -q -- 'never push to the default branch'"
 check "usage-limit watchdog enabled" "grep -q 'watchdog=1' '$P/calls.log'"
 check "works on an autopilot/ branch, not main" "git -C '$P' branch --show-current | grep -q '^autopilot/'"
 check "gitignores its state dir" "grep -qx '.autopilot/' '$P/.gitignore'"
 st=$(PATH="$STUB:$PATH" "$AP" status "$P" 2>&1)
 check "status reports done" "printf '%s' \"\$st\" | grep -q 'state:    done'"
 check "no pid files left behind" "[ ! -f '$P/.autopilot/runner.pid' ] && [ ! -f '$P/.autopilot/claude.pid' ]"
+
+new_project
+t0=$(date +%s)
+STUB_MODE=limit apr run "$P"; rc=$?
+t1=$(date +%s)
+check "waits for the usage-limit reset, then resumes" "[ $rc -eq 0 ] && [ $((t1 - t0)) -ge 2 ] && grep -q 'waiting for the window to reset' '$P/.autopilot/autopilot.log' && sed -n 2p '$P/calls.log' | grep -q -- '--resume sess-123'"
+
+new_project
+STUB_USAGE=credits STUB_MODE=done-second apr run "$P"; rc=$?
+check "refuses to run when usage credits are on" "[ $rc -ne 0 ] && [ ! -s '$P/calls.log' ] && [ ! -f '$P/AUTOPILOT_DONE.md' ]"
+STUB_USAGE=api STUB_MODE=done-second apr run "$P"; rc=$?
+check "refuses when billing can't be confirmed" "[ $rc -ne 0 ] && [ ! -s '$P/calls.log' ]"
+STUB_USAGE=credits AUTOPILOT_ALLOW_CREDITS=1 STUB_MODE=done-second apr run "$P"; rc=$?
+check "AUTOPILOT_ALLOW_CREDITS=1 overrides" "[ $rc -eq 0 ]"
+
+new_project
+t0=$(date +%s)
+PATH="$STUB:$PATH" AUTOPILOT_NO_CAFFEINATE=1 AUTOPILOT_BACKOFF_SECONDS=0 STUB_MODE=done-second "$AP" run "$P" 2>&1 | cat >/dev/null
+t1=$(date +%s)
+check "exits promptly, leaving nothing holding its output open" "[ $((t1 - t0)) -lt 15 ]"
 
 new_project
 STUB_MODE=stall apr run "$P"; rc=$?

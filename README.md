@@ -30,12 +30,13 @@ All of it lives in [`home/`](home/), which is symlinked to `~/.claude/playbook`,
 |---|---|
 | [`CLAUDE.md`](home/CLAUDE.md) | A short global working agreement: verify with evidence, stay in scope, context hygiene, safe git. Imported from your `~/.claude/CLAUDE.md`; your own content stays. |
 | [`settings.json`](home/settings.json) | Merged into yours, never replacing it. Adds allow rules for safe git/`gh` inspection; deny rules for `.env` files, SSH/cloud credentials and force-push; the hooks and status line below. |
-| [`hooks/guard-bash.sh`](home/hooks/guard-bash.sh) | Blocks recursive `rm` of `/`, `~`, `.` or `*`, and force-pushes. A last line of defence. |
+| [`hooks/guard-bash.sh`](home/hooks/guard-bash.sh) | Blocks recursive `rm` of `/`, `~`, `.` or `*`, force-pushes, and pushes to the default branch. A last line of defence. |
+| [`hooks/pr-doc-gate.sh`](home/hooks/pr-doc-gate.sh) + [`/open-pr`](home/skills/open-pr/SKILL.md) | Every PR ships with a committed doc in `docs/pr/` explaining what changed, why and how it was verified, with Mermaid diagrams (always a sequence diagram). The hook blocks `gh pr create` without it. |
 | [`hooks/notify.sh`](home/hooks/notify.sh) | Desktop alert when a session needs you or finishes, so parallel agents don't sit idle. |
 | [`statusline.sh`](home/statusline.sh) | Model · repo@branch · context % (color-coded) · cost · plan windows. |
 | Agents: [`reviewer`](home/agents/reviewer.md), [`verifier`](home/agents/verifier.md), [`researcher`](home/agents/researcher.md) | Fresh-context review against the plan; checks with evidence and short output; sourced research. |
 | Skills: [`/bootstrap-project`](home/skills/bootstrap-project/SKILL.md), [`/handoff`](home/skills/handoff/SKILL.md), [`/next-task`](home/skills/next-task/SKILL.md) | Set up a repo for Claude; hand work to a fresh session; pull, implement, verify and PR the next queued task. |
-| [`autopilot`](home/bin/autopilot) + [`/autopilot-spec`](home/skills/autopilot-spec/SKILL.md) | Describe a project once, then Claude builds it unattended until every acceptance criterion is verified, waiting out usage limits and resuming on its own. Linked to `~/.local/bin/autopilot`. |
+| [`autopilot`](home/bin/autopilot) + [`/autopilot-spec`](home/skills/autopilot-spec/SKILL.md) | Describe a project once, then Claude builds it unattended until every acceptance criterion is verified and a PR is open. It waits out usage limits and resumes on its own, and only ever uses the subscription window, never paid usage credits. Linked to `~/.local/bin/autopilot`. |
 | [`loop.md`](home/loop.md) | What a bare `/loop` does: continue → tend the PR → next task → stop. |
 | [`templates/project/`](home/templates/project/) | Project `CLAUDE.md`, `.claude/settings.json`, `.worktreeinclude`, `TASKS.md`. |
 

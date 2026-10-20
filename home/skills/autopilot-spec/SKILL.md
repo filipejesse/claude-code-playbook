@@ -12,6 +12,7 @@ Idea from the user: $ARGUMENTS
 Cover the hard parts, not the obvious ones:
 - **Outcome and users:** who uses it, the 3-7 core flows, what "finished" looks like.
 - **Form:** web app, CLI, API, library, bot, data pipeline. Where it runs (local only is the default; the run never deploys).
+- **GitHub:** whether to create a private GitHub repo for it now. With a remote, the run finishes by opening a PR with its PR doc; without one, the work stays on a local branch.
 - **Stack:** recommend one (mainstream, well documented, easy to test). Let the user override.
 - **Data and integrations:** what's stored and where; external APIs. Anything that needs keys or paid access must be either stubbed/mocked or provided now as a gitignored `.env`. The run can't get credentials later.
 - **Quality bar:** tests expected, accessibility, performance, platforms.
@@ -43,10 +44,11 @@ In the target directory (create it if needed; ask for the path in the interview,
 - `PROGRESS.md` (every criterion listed as not started), an empty `DECISIONS.md`, and `.gitignore` with `.autopilot/`, `.env*`, `!.env.example`, plus the stack's defaults.
 - `.claude/settings.json` with allow rules for the stack's build, test and package-manager commands, so the run never waits on a permission it could have had.
 - Commit: `Spec and scaffold for autopilot run`.
+- If the user chose a GitHub repo: `gh repo create <name> --private --source . --remote origin --push`. This publishes the first commit and is the only time the default branch is pushed directly (the guard hook blocks `git push` to it, by design). All later work goes through PRs.
 
 ## 4. Hand off
 Show a 5-line summary of the spec, then tell the user to start the run:
 ```bash
 cd <dir> && autopilot start
 ```
-and how to watch it: `autopilot log`, `autopilot status`, plus a note that it waits out usage limits on its own and keeps the machine awake while running. Do not start the run yourself unless the user asks.
+and how to watch it: `autopilot log`, `autopilot status`. Note that it only runs on the subscription window (it refuses to start, and stops, if usage credits are on), waits out usage limits on its own, keeps the machine awake, and ends with a PR plus its PR doc when there is a remote. Do not start the run yourself unless the user asks.
