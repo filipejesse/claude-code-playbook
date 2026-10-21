@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Records the README demo: a real autopilot run on a tiny project (no stubs, uses your plan's window).
 #   asciinema rec --headless --window-size 100x32 -c docs/assets/record-autopilot-demo.sh demo.cast
-#   agg --idle-time-limit 2 --speed 1.5 --font-size 14 demo.cast docs/assets/autopilot-demo.gif
+#   python3 docs/assets/tidy_cast.py demo.cast tidy.cast 76   # display only: shorter paths, colored tags, one line per tool call
+#   agg --cols 76 --rows 22 --font-size 22 --line-height 1.3 --idle-time-limit 2 --speed 1.5 \
+#       --last-frame-duration 6 --font-family "SF Mono,Menlo" tidy.cast term.gif
+#   python3 docs/assets/brand.py   # needs Pillow and macOS fonts; writes autopilot-demo.gif and social-preview.png
 set -u
 export AUTOPILOT_MODEL=haiku
 P=/tmp/apdemo/slugify
