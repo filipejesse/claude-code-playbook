@@ -51,6 +51,7 @@ flowchart LR
 | Result renders | page served locally, viewed at 375 px and 1280 px | hero, 3 features, 2 plans, footer; one spacing nit (the Pricing heading touches the feature cards), not covered by the structural SPEC |
 | Display cleanup only | `diff` of event lines across tidy runs; frames reviewed at the start, middle and end | events unchanged apart from the stated cleanup |
 | GIF | Pillow | 1033x776, 53 frames, 38.9 s, 4.0 MB (X allows 15 MB) |
+| `--autopilot-only` for real | swapped this machine to `install.sh --autopilot-only`, ran `autopilot run` on a new SPEC criterion, then restored the full install | DONE in about 2 min; [autopilot-demo-landing#2](https://github.com/filipejesse/autopilot-demo-landing/pull/2) opened with its PR doc; the guard blocked `git push origin main` (remote unchanged); log lines written once. Settings, CLAUDE.md and links restored byte-identical |
 | Runner fixes | `tests/run.sh` with and without the fix | with: 112 passed, 0 failed. Without: the 2 new tests fail |
 | Lint | `shellcheck --severity=warning install.sh tests/run.sh home/statusline.sh home/hooks/*.sh home/bin/autopilot docs/assets/*.sh`; `python3 -m py_compile docs/assets/*.py` | ok |
 
