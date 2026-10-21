@@ -98,6 +98,24 @@ check "agents resolve" "[ -f '$CLAUDE_DIR/agents/verifier.md' ]"
 install --copy
 check "re-run in copy mode keeps working" "[ -f '$CLAUDE_DIR/playbook/CLAUDE.md' ] && [ -f '$CLAUDE_DIR/agents/verifier.md' ]"
 
+echo "Autopilot-only install"
+new_home
+install --autopilot-only
+S="$CLAUDE_DIR/settings.json"
+check "autopilot command and its skills linked" "[ -x '$HOME/.local/bin/autopilot' ] && [ -f '$CLAUDE_DIR/skills/autopilot-spec/SKILL.md' ] && [ -f '$CLAUDE_DIR/skills/open-pr/SKILL.md' ] && [ -f '$CLAUDE_DIR/agents/verifier.md' ]"
+check "project template reachable for /autopilot-spec" "[ -f '$CLAUDE_DIR/playbook/templates/project/CLAUDE.md' ]"
+check "other skills, agents and loop.md not linked" "[ ! -e '$CLAUDE_DIR/skills/next-task' ] && [ ! -e '$CLAUDE_DIR/agents/reviewer.md' ] && [ ! -e '$CLAUDE_DIR/loop.md' ]"
+check "no global CLAUDE.md import" "! grep -qs claude-code-playbook '$CLAUDE_DIR/CLAUDE.md'"
+check "guard and PR-doc hooks only" "jq -e '([.hooks.PreToolUse[].hooks[].command | split(\"/\") | last] | sort) == [\"guard-bash.sh\", \"pr-doc-gate.sh\"] and (.hooks | keys) == [\"PreToolUse\"]' '$S' >/dev/null"
+check "deny rules, no status line" "jq -e '(.permissions.deny | index(\"Read(**/.env)\")) and (.statusLine == null)' '$S' >/dev/null"
+install
+check "full install afterwards adds the rest" "[ -e '$CLAUDE_DIR/skills/next-task' ] && grep -q claude-code-playbook '$CLAUDE_DIR/CLAUDE.md' && jq -e '.statusLine and .hooks.Stop' '$S' >/dev/null"
+new_home
+S="$CLAUDE_DIR/settings.json"
+install --autopilot-only
+install --uninstall --autopilot-only
+check "uninstall removes everything" "[ ! -e '$HOME/.local/bin/autopilot' ] && [ ! -e '$CLAUDE_DIR/skills/open-pr' ] && [ ! -e '$CLAUDE_DIR/playbook' ] && ! grep -q '/playbook/' '$S'"
+
 echo "Refuses to clobber foreign playbook dir"
 new_home
 mkdir -p "$CLAUDE_DIR/playbook" && echo x >"$CLAUDE_DIR/playbook/note"
