@@ -196,7 +196,7 @@ do_run() {
     if [ -n "${AUTOPILOT_MODEL:-}" ]; then set -- "$@" --model "$AUTOPILOT_MODEL"; fi
 
     before=$(fingerprint)
-    start_line=$(wc -l <"$EVENTS" 2>/dev/null | tr -d ' ' || echo 0)
+    start_line=$({ wc -l <"$EVENTS"; } 2>/dev/null | tr -d ' ') || true
     [ -z "$start_line" ] && start_line=0
     log "attempt $((attempt + 1)): claude ${session:+--resume $session}"
     (cd "$DIR" && exec claude "$@" </dev/null >>"$EVENTS" 2>>"$ST/stderr.log") &
@@ -242,7 +242,8 @@ case "$cmd" in
     preflight
     require_subscription_only
     alive "$ST/runner.pid" && die "already running (pid $(cat "$ST/runner.pid"))"
-    nohup "$0" run "$DIR" >>"$LOG" 2>&1 </dev/null &
+    # log() already appends to $LOG; anything else the runner prints goes to runner.out
+    nohup "$0" run "$DIR" >>"$ST/runner.out" 2>&1 </dev/null &
     echo $! >"$ST/runner.pid"
     echo "autopilot running in the background (pid $!)."
     echo "  watch:  autopilot log $DIR"
