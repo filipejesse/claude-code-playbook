@@ -15,7 +15,7 @@ It's built around three goals:
 
 ![A real autopilot run: SPEC.md, autopilot start, the live log, AUTOPILOT_DONE.md with evidence, the commits](docs/assets/autopilot-demo.gif)
 
-*A real run (Haiku, about 70 seconds), sped up. For readability, long tool-call lines are cut to one row and paths shortened; nothing else is changed. Recorded with [`docs/assets/record-autopilot-demo.sh`](docs/assets/record-autopilot-demo.sh). The demo project has no remote, so the run stops before the PR step.*
+*A real run: Haiku builds a small landing page from a 5-criterion SPEC.md, verifies it (18 checks), and opens its own pull request on a throwaway GitHub repo, in about 1 min 45 s. The GIF is sped up; for readability, tool-call lines are cut to one row and paths shortened, and nothing else is changed. Recorded with [`docs/assets/record-autopilot-demo.sh`](docs/assets/record-autopilot-demo.sh).*
 
 ```text
 claude                      # in an empty folder

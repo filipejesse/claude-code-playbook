@@ -11,7 +11,8 @@ hdr = json.loads(lines[0])
 out = [json.dumps(hdr)]
 GREEN, CYAN, DIM, BOLD, RST = '\x1b[32m', '\x1b[36m', '\x1b[2m', '\x1b[1m', '\x1b[0m'
 def fix(l):
-    l = l.replace('/private/tmp/apdemo/slugify/', './').replace('/private/tmp/apdemo/slugify', '.').replace('/tmp/apdemo/slugify', '.')
+    l = re.sub(r'(/private)?/tmp/apdemo/[\w-]+/', './', l)
+    l = re.sub(r'(/private)?/tmp/apdemo/[\w-]+\b', '.', l)
     m = re.match(r'^(tool|say|init|end)(\s+)(.*)$', l)
     if not m: return l
     tag, sp, rest = m.groups()

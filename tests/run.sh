@@ -272,6 +272,12 @@ t1=$(date +%s)
 check "exits promptly, leaving nothing holding its output open" "[ $((t1 - t0)) -lt 15 ]"
 
 new_project
+PATH="$STUB:$PATH" AUTOPILOT_NO_CAFFEINATE=1 AUTOPILOT_BACKOFF_SECONDS=0 STUB_MODE=done-second "$AP" start "$P" >/dev/null 2>&1
+for _ in $(seq 1 100); do [ -f "$P/AUTOPILOT_DONE.md" ] && ! [ -f "$P/.autopilot/runner.pid" ] && break; sleep 0.1; done
+check "start: each log line written once" "[ \"\$(grep -c 'autopilot started' '$P/.autopilot/autopilot.log')\" = 1 ] && [ \"\$(grep -c 'DONE: see' '$P/.autopilot/autopilot.log')\" = 1 ]"
+check "start: no error before the first events file exists" "! grep -qs 'No such file' '$P/.autopilot/autopilot.log' '$P/.autopilot/runner.out'"
+
+new_project
 STUB_MODE=stall apr run "$P"; rc=$?
 check "stops as blocked after 3 runs without progress" "[ $rc -eq 3 ] && [ -f '$P/AUTOPILOT_BLOCKED.md' ] && [ \"\$(wc -l <'$P/calls.log' | tr -d ' ')\" = 3 ]"
 
