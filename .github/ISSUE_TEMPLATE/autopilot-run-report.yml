@@ -1,0 +1,36 @@
+name: Autopilot run report
+description: Tell us how a real autopilot run went, good or bad.
+labels: [autopilot, run-report]
+body:
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options: [Done (AUTOPILOT_DONE.md), Blocked (AUTOPILOT_BLOCKED.md), Stopped or crashed, Still running]
+    validations: {required: true}
+  - type: checkboxes
+    id: limit
+    attributes:
+      label: Usage limits
+      options:
+        - label: The run hit a usage limit (5-hour or weekly)
+        - label: It waited and resumed on its own after the reset
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, `claude --version`, plan (Pro/Max/Team), model, permission mode
+      placeholder: macOS 15, 2.1.304, Max, sonnet, auto
+    validations: {required: true}
+  - type: input
+    id: duration
+    attributes:
+      label: Duration and size
+      placeholder: 3h 20m, 41 commits, one limit wait
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened
+      description: Paste `autopilot status` and the relevant part of `.autopilot/autopilot.log`. Remove anything private.
+      render: text
+    validations: {required: true}

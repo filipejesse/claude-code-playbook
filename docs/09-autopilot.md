@@ -4,6 +4,14 @@
 
 Goal: describe a project once, then let Claude work until it's done, with no questions and no babysitting. When the usage window runs out, Claude waits for it to reset and continues on its own.
 
+## Requirements
+
+- A Claude Pro, Max or Team subscription logged in to Claude Code. API-key billing, usage-based Enterprise plans and accounts with usage credits on are refused (see [Before a long run](#before-a-long-run)).
+- Claude Code v2.1.259 or later, in a folder you have trusted, with hooks enabled: `/goal` is a hook, so `disableAllHooks` or managed `allowManagedHooksOnly` turn it off.
+- `bash`, `git`, `jq`; `gh` logged in for the final PR.
+- Install with `./install.sh`, or `./install.sh --autopilot-only` for just the pieces autopilot uses.
+- First runs belong in a VM, container or disposable account: see the warning in the [README](../README.md#before-your-first-run).
+
 ## How to use it
 
 ```text

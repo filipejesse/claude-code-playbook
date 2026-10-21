@@ -11,6 +11,10 @@ Usage: ./install.sh [options]
   --dry-run           show what would change and write nothing
   --copy              copy files into ~/.claude/playbook instead of symlinking this checkout
                       (default is a symlink, so `git pull` updates your setup in place)
+  --autopilot-only    install only what autopilot needs: the autopilot command, /autopilot-spec,
+                      /open-pr, the verifier agent, and the guard + PR-doc hooks with the
+                      permission rules (no global CLAUDE.md import, status line or notifications).
+                      Run ./install.sh later to add the rest.
   --force-statusline  replace an existing status line with the playbook's
   --install-claude    install Claude Code with the official native installer if it is missing
   --uninstall         remove everything the playbook added (settings.json is backed up first)
@@ -20,11 +24,12 @@ Honors CLAUDE_CONFIG_DIR (default: ~/.claude).
 EOF
 }
 
-DRY=0 COPY=0 FORCE_SL=0 INSTALL_CLAUDE=0 UNINSTALL=0
+DRY=0 COPY=0 ONLY_AP=0 FORCE_SL=0 INSTALL_CLAUDE=0 UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
     --copy) COPY=1 ;;
+    --autopilot-only) ONLY_AP=1 ;;
     --force-statusline) FORCE_SL=1 ;;
     --install-claude) INSTALL_CLAUDE=1 ;;
     --uninstall) UNINSTALL=1 ;;
@@ -54,8 +59,14 @@ section() { printf '\n%s\n' "$*"; }
 command -v jq >/dev/null 2>&1 || die "jq is required (preinstalled on macOS 15+; otherwise: brew install jq / sudo apt install jq)"
 
 # The playbook settings with __PLAYBOOK__ resolved to this machine's path.
+# With --autopilot-only: permissions plus the guard and PR-doc hooks, nothing else.
+AP_SETTINGS_JQ='{permissions}
+  + {hooks: {PreToolUse: [ .hooks.PreToolUse[] | select(any(.hooks[]; .command | test("guard-bash|pr-doc-gate"))) ]}}'
 base_settings() {
   jq --arg pb "$PB" 'walk(if type == "string" then gsub("__PLAYBOOK__"; $pb) else . end)' "$SRC/settings.json"
+}
+install_settings() {
+  if [ "$ONLY_AP" -eq 1 ]; then base_settings | jq "$AP_SETTINGS_JQ"; else base_settings; fi
 }
 
 read_settings() {
@@ -152,6 +163,12 @@ unlink_item() {
 }
 
 each_item() { # calls "$1 <rel> <dest>" for every managed item
+  if [ "$ONLY_AP" -eq 1 ]; then
+    "$1" agents/verifier.md "$CD/agents/verifier.md"
+    for n in autopilot-spec open-pr; do "$1" "skills/$n" "$CD/skills/$n"; done
+    "$1" bin/autopilot "$HOME/.local/bin/autopilot"
+    return
+  fi
   for f in "$SRC"/agents/*.md; do n=$(basename "$f"); "$1" "agents/$n" "$CD/agents/$n"; done
   for d in "$SRC"/skills/*/; do n=$(basename "$d"); "$1" "skills/$n" "$CD/skills/$n"; done
   "$1" loop.md "$CD/loop.md"
@@ -183,7 +200,7 @@ install_playbook_dir() {
 }
 
 do_install() {
-  printf 'claude-code-playbook: installing into %s%s\n' "$CD" "$([ "$DRY" -eq 1 ] && echo ' (dry run)')"
+  printf 'claude-code-playbook: installing %sinto %s%s\n' "$([ "$ONLY_AP" -eq 1 ] && echo 'autopilot only ')" "$CD" "$([ "$DRY" -eq 1 ] && echo ' (dry run)')"
 
   section "Claude Code"
   if command -v claude >/dev/null 2>&1; then
@@ -202,7 +219,9 @@ do_install() {
   case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "note: add ~/.local/bin to your PATH to use the autopilot command" ;; esac
 
   section "Global instructions"
-  if [ -f "$MEMORY" ] && grep -qF "$BEGIN_MARK" "$MEMORY"; then
+  if [ "$ONLY_AP" -eq 1 ]; then
+    say "skip $MEMORY (--autopilot-only: autopilot's goal carries its own rules)"
+  elif [ -f "$MEMORY" ] && grep -qF "$BEGIN_MARK" "$MEMORY"; then
     say "ok   $MEMORY imports $PB_REF/CLAUDE.md"
   else
     act "append import of $PB_REF/CLAUDE.md to $MEMORY (your existing content is kept)"
@@ -215,10 +234,10 @@ do_install() {
   fi
 
   section "Settings"
-  new=$(read_settings | jq --argjson b "$(base_settings)" --arg pb "$PB" \
+  new=$(read_settings | jq --argjson b "$(install_settings)" --arg pb "$PB" \
     --argjson force "$([ "$FORCE_SL" -eq 1 ] && echo true || echo false)" "$MERGE_JQ")
   existing_sl=$(read_settings | jq -r '.statusLine.command // empty')
-  if [ -n "$existing_sl" ] && [ "$FORCE_SL" -eq 0 ] && [[ "$existing_sl" != *"$PB"* ]]; then
+  if [ "$ONLY_AP" -eq 0 ] && [ -n "$existing_sl" ] && [ "$FORCE_SL" -eq 0 ] && [[ "$existing_sl" != *"$PB"* ]]; then
     say "keeping your status line ($existing_sl); use --force-statusline to replace it"
   fi
   write_settings "$new"
@@ -226,11 +245,16 @@ do_install() {
   section "Next steps"
   say "1. Start a new Claude Code session (or run /reload-plugins in an open one)."
   say "2. Run /status to confirm 'User settings' loaded, and 'claude doctor' to check for rejected entries."
-  say "3. In each repo you work on, run /bootstrap-project."
+  if [ "$ONLY_AP" -eq 1 ]; then
+    say "3. In a new project folder, run claude and /autopilot-spec <idea>, then: autopilot start"
+  else
+    say "3. In each repo you work on, run /bootstrap-project."
+  fi
   say "Update later with: git -C \"$REPO\" pull$([ "$COPY" -eq 1 ] && echo " && \"$REPO/install.sh\" --copy")"
 }
 
 do_uninstall() {
+  ONLY_AP=0 # always remove everything the playbook may have added
   printf 'claude-code-playbook: uninstalling from %s%s\n' "$CD" "$([ "$DRY" -eq 1 ] && echo ' (dry run)')"
 
   section "Files"

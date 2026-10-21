@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue (a way past a guard hook)
+    url: https://github.com/filipejesse/claude-code-playbook/security/advisories/new
+    about: Report privately, not as a public issue.
+  - name: Claude Code itself
+    url: https://github.com/anthropics/claude-code/issues
+    about: Bugs in Claude Code, not in this playbook.

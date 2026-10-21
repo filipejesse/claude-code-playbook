@@ -1,0 +1,22 @@
+name: Bug
+description: Something in the installer, a hook, autopilot or a guide is wrong.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Exact commands. For a hook, the command Claude tried to run.
+      render: text
+    validations: {required: true}
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: macOS 15 / Ubuntu 24.04, claude 2.1.304, bash 5.2
+    validations: {required: true}
