@@ -47,6 +47,17 @@ paths:
 - Every new endpoint needs an integration test in tests/api/.
 ```
 
+## Frontend work: skills preloaded into a specialist
+
+UI work is where generic defaults show most, so the playbook gives it a standard instead of relying on taste per session:
+
+- The global working agreement says anything a user sees follows the [`impeccable`](https://github.com/pbakaus/impeccable) skill as the workflow (context loading, sub-commands like `audit`, `polish`, `harden`, and a craft floor read before every UI edit) and `frontend-design` as the aesthetic direction.
+- The [`frontend`](../home/agents/frontend.md) subagent has both skills in its `skills:` frontmatter, so their full text is injected when it starts, instead of depending on the model choosing to invoke them. Delegate a screen, a redesign, an audit or a polish pass to it. It reads the project's `DESIGN.md` and components first, and it checks the rendered result at mobile and desktop widths before reporting.
+- `install.sh` installs both plugins at user scope through `claude plugin` (`--no-plugins` skips this). If a plugin is missing or disabled, Claude Code skips the preload with only a debug-log warning, so the agent is told to say so and stop.
+- The preload applies when the agent runs as a **subagent**. Started as the main session (`claude --agent frontend`), it does not apply, and the agent loads the skills with the Skill tool instead.
+
+To give one project its own frontend rules (its stack, tokens, component paths), add a `.claude/rules/frontend.md` with `paths:` for the UI directories, as above.
+
 ## Keeping state across sessions
 
 - **Name sessions** (`/rename oauth-migration`) and resume them with `claude --resume`, treating each as a branch of work.
@@ -58,3 +69,4 @@ paths:
 - [How Claude remembers your project](https://code.claude.com/docs/en/memory)
 - [Best practices: write an effective CLAUDE.md](https://code.claude.com/docs/en/best-practices#write-an-effective-claude-md)
 - [Skills](https://code.claude.com/docs/en/skills)
+- [Subagents: preload skills](https://code.claude.com/docs/en/sub-agents)

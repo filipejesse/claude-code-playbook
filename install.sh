@@ -15,6 +15,8 @@ Usage: ./install.sh [options]
                       /open-pr, the verifier agent, and the guard + PR-doc hooks with the
                       permission rules (no global CLAUDE.md import, status line or notifications).
                       Run ./install.sh later to add the rest.
+  --no-plugins        skip installing the frontend plugins (impeccable, frontend-design)
+                      that the frontend agent preloads
   --force-statusline  replace an existing status line with the playbook's
   --install-claude    install Claude Code with the official native installer if it is missing
   --uninstall         remove everything the playbook added (settings.json is backed up first)
@@ -24,12 +26,13 @@ Honors CLAUDE_CONFIG_DIR (default: ~/.claude).
 EOF
 }
 
-DRY=0 COPY=0 ONLY_AP=0 FORCE_SL=0 INSTALL_CLAUDE=0 UNINSTALL=0
+DRY=0 COPY=0 ONLY_AP=0 NO_PLUGINS=0 FORCE_SL=0 INSTALL_CLAUDE=0 UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
     --copy) COPY=1 ;;
     --autopilot-only) ONLY_AP=1 ;;
+    --no-plugins) NO_PLUGINS=1 ;;
     --force-statusline) FORCE_SL=1 ;;
     --install-claude) INSTALL_CLAUDE=1 ;;
     --uninstall) UNINSTALL=1 ;;
@@ -137,6 +140,52 @@ if .hooks then .hooks |= strip_hooks($pb) else . end
 | if .permissions == {} then del(.permissions) else . end
 '
 
+# Plugins whose skills the frontend agent preloads: "<plugin>@<marketplace> <marketplace GitHub repo>".
+PLUGINS=(
+  "impeccable@impeccable pbakaus/impeccable"
+  "frontend-design@claude-plugins-official anthropics/claude-plugins-official"
+)
+
+# Install and enable each plugin through the claude CLI, at user scope. Never fatal:
+# a failure leaves the agent working without that skill, and is reported.
+install_plugins() {
+  if ! command -v claude >/dev/null 2>&1; then
+    say "skip (claude not found); later run, for each plugin below:"
+    for p in "${PLUGINS[@]}"; do
+      say "     claude plugin marketplace add ${p#* } && claude plugin install ${p%% *} --scope user"
+    done
+    return
+  fi
+  plugins=$(claude plugin list --json 2>/dev/null) || plugins='[]'
+  markets=$(claude plugin marketplace list --json 2>/dev/null) || markets='[]'
+  for p in "${PLUGINS[@]}"; do
+    id=${p%% *} repo=${p#* } market=${id#*@}
+    state=$(printf '%s' "$plugins" | jq -r --arg id "$id" \
+      'first(.[]? | select(.id == $id) | if .enabled then "enabled" else "disabled" end) // "missing"' 2>/dev/null) || state=missing
+    case "$state" in
+      enabled) say "ok   $id"; continue ;;
+      disabled)
+        act "enable $id"
+        run_plugin enable "$id" --scope user || true
+        continue ;;
+    esac
+    if ! printf '%s' "$markets" | jq -e --arg m "$market" 'any(.[]?; .name == $m)' >/dev/null 2>&1; then
+      act "add plugin marketplace $repo"
+      run_plugin marketplace add "$repo" || continue
+    fi
+    act "install $id"
+    run_plugin install "$id" --scope user || true
+  done
+}
+run_plugin() {
+  [ "$DRY" -eq 1 ] && return 0
+  if ! out=$(claude plugin "$@" 2>&1); then
+    say "warn claude plugin $* failed:"
+    printf '%s\n' "$out" | sed 's/^/      /'
+    return 1
+  fi
+}
+
 # Symlink ~/.claude/<dest> -> ~/.claude/playbook/<rel>, never touching files we don't own.
 link_item() {
   dest=$2 target="$PB/$1"
@@ -218,6 +267,15 @@ do_install() {
   each_item link_item
   case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "note: add ~/.local/bin to your PATH to use the autopilot command" ;; esac
 
+  section "Frontend plugins"
+  if [ "$ONLY_AP" -eq 1 ]; then
+    say "skip (--autopilot-only)"
+  elif [ "$NO_PLUGINS" -eq 1 ]; then
+    say "skip (--no-plugins): the frontend agent will report the missing skills"
+  else
+    install_plugins
+  fi
+
   section "Global instructions"
   if [ "$ONLY_AP" -eq 1 ]; then
     say "skip $MEMORY (--autopilot-only: autopilot's goal carries its own rules)"
@@ -285,6 +343,7 @@ do_uninstall() {
   else
     say "ok   no $SETTINGS"
   fi
+  printf '\nPlugins installed for the frontend agent are kept; remove each with: claude plugin uninstall <plugin>@<marketplace>\n'
   printf '\nRemoved. Permission rules you also had before installing were removed too; restore them from a settings.json.bak-playbook-* backup if needed.\n'
 }
 

@@ -16,7 +16,27 @@ new_home() {
   unset CLAUDE_CONFIG_DIR
   mkdir -p "$CLAUDE_DIR"
 }
-install() { "$REPO/install.sh" "$@" >/dev/null 2>&1; }
+# A stub claude for the installer: logs each call to $HOME/claude-calls and keeps the
+# installed plugins in $HOME/stub-plugins.json, so tests never touch real plugins.
+PSTUB=$(mktemp -d)
+cat >"$PSTUB/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >>"$HOME/claude-calls"
+f="$HOME/stub-plugins.json"
+[ -f "$f" ] || echo '[]' >"$f"
+case "$*" in
+  --version) echo "9.9.9 (Claude Code stub)" ;;
+  "plugin list --json") cat "$f" ;;
+  "plugin marketplace list --json") echo '[{"name":"claude-plugins-official"}]' ;;
+  "plugin install "*)
+    if [ -n "${STUB_PLUGIN_FAIL:-}" ]; then echo "network unreachable" >&2; exit 1; fi
+    jq --arg id "$3" '. + [{id: $id, enabled: true}]' "$f" >"$f.tmp" && mv "$f.tmp" "$f" ;;
+  "plugin enable "*) jq --arg id "$3" 'map(if .id == $id then .enabled = true else . end)' "$f" >"$f.tmp" && mv "$f.tmp" "$f" ;;
+esac
+STUB
+chmod +x "$PSTUB/claude"
+install() { PATH="$PSTUB:$PATH" "$REPO/install.sh" "$@" >/dev/null 2>&1; }
+calls() { cat "$HOME/claude-calls" 2>/dev/null; }
 
 echo "JSON files"
 for f in "$REPO"/home/settings.json "$REPO"/home/templates/project/.claude/settings.json; do
@@ -43,9 +63,17 @@ check "settings has guard hook" "jq -e '[.hooks.PreToolUse[].hooks[].command] | 
 check "no unresolved placeholder" "! grep -q __PLAYBOOK__ '$CLAUDE_DIR/settings.json'"
 check "hook scripts executable" "[ -x '$CLAUDE_DIR/playbook/hooks/guard-bash.sh' ] && [ -x '$CLAUDE_DIR/playbook/statusline.sh' ]"
 
+check "frontend agent linked, preloads both skills" "[ -f '$CLAUDE_DIR/agents/frontend.md' ] && grep -qx '  - impeccable:impeccable' '$CLAUDE_DIR/agents/frontend.md' && grep -qx '  - frontend-design:frontend-design' '$CLAUDE_DIR/agents/frontend.md'"
+check "CLAUDE.md has frontend rules" "grep -q '^## Frontend' '$CLAUDE_DIR/playbook/CLAUDE.md'"
+check "adds the impeccable marketplace" "calls | grep -qx 'plugin marketplace add pbakaus/impeccable'"
+check "installs both frontend plugins at user scope" "calls | grep -qx 'plugin install impeccable@impeccable --scope user' && calls | grep -qx 'plugin install frontend-design@claude-plugins-official --scope user'"
+check "does not re-add a known marketplace" "! calls | grep -q 'marketplace add anthropics/'"
+
 echo "Idempotent re-run"
 before=$(cat "$CLAUDE_DIR/settings.json")
+: >"$HOME/claude-calls"
 install
+check "plugins not reinstalled" "! calls | grep -qE 'plugin install|marketplace add'"
 check "settings unchanged" "[ \"\$(cat '$CLAUDE_DIR/settings.json')\" = \"\$before\" ]"
 check "import added once" "[ \"\$(grep -c 'claude-code-playbook:begin' '$CLAUDE_DIR/CLAUDE.md')\" = 1 ]"
 check "no backup on no-op" "! ls '$CLAUDE_DIR'/settings.json.bak-playbook-* >/dev/null 2>&1"
@@ -87,7 +115,7 @@ check "keeps unrelated keys" "jq -e '.theme == \"dark\" and (.permissions.deny |
 
 echo "Dry run writes nothing"
 new_home
-"$REPO/install.sh" --dry-run >/dev/null 2>&1
+PATH="$PSTUB:$PATH" "$REPO/install.sh" --dry-run >/dev/null 2>&1
 check "no files created" "[ -z \"\$(ls -A '$CLAUDE_DIR')\" ]"
 
 echo "Copy mode"
@@ -116,10 +144,31 @@ install --autopilot-only
 install --uninstall --autopilot-only
 check "uninstall removes everything" "[ ! -e '$HOME/.local/bin/autopilot' ] && [ ! -e '$CLAUDE_DIR/skills/open-pr' ] && [ ! -e '$CLAUDE_DIR/playbook' ] && ! grep -q '/playbook/' '$S'"
 
+echo "Frontend plugins"
+new_home
+echo '[{"id":"impeccable@impeccable","enabled":false},{"id":"frontend-design@claude-plugins-official","enabled":true}]' >"$HOME/stub-plugins.json"
+install
+check "re-enables a disabled plugin" "calls | grep -qx 'plugin enable impeccable@impeccable --scope user' && ! calls | grep -q 'plugin install'"
+new_home
+install --no-plugins
+check "--no-plugins makes no plugin calls" "! calls | grep -q '^plugin'"
+new_home
+out=$(PATH="$PSTUB:$PATH" STUB_PLUGIN_FAIL=1 "$REPO/install.sh" 2>&1); rc=$?
+check "plugin failure is reported, not fatal" "[ $rc -eq 0 ] && grep -q 'warn claude plugin install' <<<\"\$out\" && [ -f '$CLAUDE_DIR/agents/frontend.md' ]"
+new_home
+out=$(PATH="/usr/bin:/bin" "$REPO/install.sh" 2>&1); rc=$?
+check "without claude, prints the commands to run" "[ $rc -eq 0 ] && grep -q 'claude plugin install impeccable@impeccable --scope user' <<<\"\$out\""
+new_home
+install --dry-run
+check "dry run makes no plugin changes" "! calls | grep -qE 'plugin install|marketplace add'"
+new_home
+install --autopilot-only
+check "--autopilot-only skips plugins" "! calls | grep -q '^plugin'"
+
 echo "Refuses to clobber foreign playbook dir"
 new_home
 mkdir -p "$CLAUDE_DIR/playbook" && echo x >"$CLAUDE_DIR/playbook/note"
-check "exits non-zero" "! '$REPO/install.sh' >/dev/null 2>&1"
+check "exits non-zero" "! PATH='$PSTUB':\$PATH '$REPO/install.sh' >/dev/null 2>&1"
 check "leaves it alone" "[ -f '$CLAUDE_DIR/playbook/note' ]"
 
 echo "Guard hook"
