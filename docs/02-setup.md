@@ -21,6 +21,7 @@ Requirements: `bash`, `git`, `jq` (preinstalled on macOS 15+; `sudo apt install 
 |---|---|---|
 | Links the baseline | `~/.claude/playbook` → `home/` in the checkout | `git pull` updates your setup. Use `--copy` on machines where you won't keep the checkout. |
 | Links agents, skills, `loop.md` | `~/.claude/agents/`, `~/.claude/skills/`, `~/.claude/loop.md` | Skips any file you already have with the same name. |
+| Installs the frontend plugins | `claude plugin install impeccable@impeccable` and `frontend-design@claude-plugins-official`, user scope | The `frontend` agent preloads their skills. Skips plugins you already have, re-enables disabled ones, and reports failures without stopping. `--no-plugins` skips this step; uninstall leaves the plugins installed. |
 | Imports the global working agreement | appends an `@~/.claude/playbook/CLAUDE.md` block to `~/.claude/CLAUDE.md` | Your own content in that file is kept. |
 | Merges settings | `~/.claude/settings.json` | Adds permission rules, hooks and the status line. Keeps your keys, never duplicates entries, keeps an existing status line unless `--force-statusline`. Writes a timestamped backup before any change. |
 
