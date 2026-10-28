@@ -257,7 +257,7 @@ if [ "${2:-}" = "/usage" ]; then
   esac
   exit 0
 fi
-printf '%s | watchdog=%s\n' "$*" "${CLAUDE_CODE_RETRY_WATCHDOG:-}" >>"$STUB_LOG"
+printf '%s | watchdog=%s bgwait=%s\n' "$*" "${CLAUDE_CODE_RETRY_WATCHDOG:-}" "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-}" >>"$STUB_LOG"
 n=$(wc -l <"$STUB_LOG" | tr -d ' ')
 echo '{"type":"system","subtype":"init","session_id":"sess-123"}'
 case "$STUB_MODE" in
@@ -325,6 +325,32 @@ PATH="$STUB:$PATH" AUTOPILOT_NO_CAFFEINATE=1 AUTOPILOT_BACKOFF_SECONDS=0 STUB_MO
 for _ in $(seq 1 100); do [ -f "$P/AUTOPILOT_DONE.md" ] && ! [ -f "$P/.autopilot/runner.pid" ] && break; sleep 0.1; done
 check "start: each log line written once" "[ \"\$(grep -c 'autopilot started' '$P/.autopilot/autopilot.log')\" = 1 ] && [ \"\$(grep -c 'DONE: see' '$P/.autopilot/autopilot.log')\" = 1 ]"
 check "start: no error before the first events file exists" "! grep -qs 'No such file' '$P/.autopilot/autopilot.log' '$P/.autopilot/runner.out'"
+
+check "background subagents get an hour before being stopped" "grep -q 'bgwait=3600000' '$P/calls.log'"
+check "goal says to wait for background subagents" "head -1 '$P/calls.log' | grep -q -- 'wait for the background subagents you started'"
+check "a finished run forgets its session" "[ ! -f '$P/.autopilot/session' ] && [ ! -f '$P/.autopilot/session.spec' ]"
+
+# One session per spec: the next spec starts fresh; a stopped run of the same spec resumes.
+echo "# next spec" >"$P/SPEC.md"; rm -f "$P/AUTOPILOT_DONE.md"; : >"$STUB_LOG"
+STUB_MODE=done-second apr run "$P"
+check "a new spec after a finished one starts a fresh session" "! head -1 '$P/calls.log' | grep -q -- '--resume'"
+spec_id() { cksum <"$1/SPEC.md" | awk '{ print $1 "-" $2 }'; }
+seed_session() { rm -f "$P/AUTOPILOT_DONE.md"; : >"$STUB_LOG"; echo sess-old >"$P/.autopilot/session"; [ -n "${1:-}" ] && echo "$1" >"$P/.autopilot/session.spec"; return 0; }
+seed_session "$(spec_id "$P")"
+STUB_MODE=done-second apr run "$P"
+check "same spec resumes its session" "head -1 '$P/calls.log' | grep -q -- '--resume sess-old'"
+seed_session "$(spec_id "$P")"; echo "# edited" >>"$P/SPEC.md"
+STUB_MODE=done-second apr run "$P"
+check "changed SPEC.md starts a fresh session" "! head -1 '$P/calls.log' | grep -q -- '--resume' && grep -q 'starting a fresh session (SPEC.md' '$P/.autopilot/autopilot.log'"
+seed_session
+STUB_MODE=done-second apr run "$P"
+check "a session with no recorded spec (older runner) starts fresh" "! head -1 '$P/calls.log' | grep -q -- '--resume'"
+seed_session "$(spec_id "$P")"
+AUTOPILOT_FRESH_SESSION=1 STUB_MODE=done-second apr run "$P"
+check "AUTOPILOT_FRESH_SESSION=1 starts fresh" "! head -1 '$P/calls.log' | grep -q -- '--resume' && sed -n 2p '$P/calls.log' | grep -q -- '--resume sess-123'"
+seed_session "$(spec_id "$P")"
+AUTOPILOT_BG_WAIT_MS=5 STUB_MODE=done-second apr run "$P"
+check "AUTOPILOT_BG_WAIT_MS overrides the wait" "grep -q 'bgwait=5' '$P/calls.log'"
 
 new_project
 STUB_MODE=stall apr run "$P"; rc=$?

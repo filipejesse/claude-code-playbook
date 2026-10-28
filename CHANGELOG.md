@@ -2,6 +2,11 @@
 
 Newest first. Each entry links the review it came from (see `docs/last-reviewed.md`).
 
+## 2026-10-28 (autopilot: one session per spec)
+- Fixed: `autopilot start` resumed the same Claude session for every spec in a project, so each request re-read all earlier specs' history (a real project reached ~840K cached tokens per request after nine specs). The session is now tied to a checksum of the SPEC.md it started on; a new or edited spec, a finished run, a session from an older runner or `AUTOPILOT_FRESH_SESSION=1` start fresh. Restarts and usage-limit waits within a spec still resume.
+- Fixed: background subagents were stopped 10 min after the last turn and their work redone. Autopilot now gives them 1 h (`AUTOPILOT_BG_WAIT_MS`), and the goal tells Claude to wait for them and stop idle dev servers before ending a turn.
+- Guide 9 and `/autopilot-spec` mention starting on a fresh usage window and trusting the folder.
+
 ## 2026-10-23 (frontend specialist)
 - New `frontend` subagent with the `impeccable` and `frontend-design` skills preloaded through `skills:` frontmatter. It reads the project's design system first and checks the rendered result at mobile and desktop widths.
 - The global working agreement has a Frontend section: UI work follows those two skills and goes to the `frontend` agent.

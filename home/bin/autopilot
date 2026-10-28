@@ -5,6 +5,9 @@
 # - CLAUDE_CODE_RETRY_WATCHDOG waits out usage limits (session and weekly) and resumes
 # - never spends usage credits: refuses to start, and stops, if usage credits are enabled
 # - the machine is kept awake; if the claude process dies, it is resumed (same session)
+# - one Claude session per spec: a new or changed SPEC.md (or a finished run) starts a fresh
+#   session, so a run never re-reads the history of earlier specs on every request
+# - background subagents get time to finish before the process exits (AUTOPILOT_BG_WAIT_MS)
 set -euo pipefail
 
 usage() {
@@ -30,6 +33,14 @@ Environment:
   AUTOPILOT_NO_CAFFEINATE=1  don't keep the machine awake
   AUTOPILOT_CREDIT_CHECK_SECONDS  how often to re-check that usage credits are off (default 900)
   AUTOPILOT_ALLOW_CREDITS=1  skip the usage-credits check (lets the run spend paid credits)
+  AUTOPILOT_FRESH_SESSION=1  start a new Claude session even if SPEC.md is unchanged
+  AUTOPILOT_BG_WAIT_MS       how long claude waits for its background subagents and shells
+                             after the last turn before stopping them (default 3600000 = 1 h)
+
+Sessions: restarts and usage-limit waits resume the same session. A new run gets a fresh
+session when SPEC.md differs from the one the session started on, when the previous run
+finished (AUTOPILOT_DONE.md), or with AUTOPILOT_FRESH_SESSION=1. Progress carries over through
+the repository (commits, PROGRESS.md, DECISIONS.md), not through the conversation.
 EOF
 }
 
@@ -42,7 +53,7 @@ EVENTS="$ST/events.jsonl"
 MAX_RESTARTS=${AUTOPILOT_MAX_RESTARTS:-20}
 BACKOFF=${AUTOPILOT_BACKOFF_SECONDS:-60}
 
-GOAL='Every acceptance criterion in SPEC.md is implemented and verified in this repository, and AUTOPILOT_DONE.md exists listing each criterion with the command you ran and its result. Rules for the whole run: work autonomously and never ask the user anything; when a decision is needed, choose the option most consistent with SPEC.md (prefer the simplest one that meets it), record it in DECISIONS.md with one line of reasoning, and continue. Keep PROGRESS.md current: criteria done with evidence, in progress, next. Run the verification command from SPEC.md after each meaningful change and fix failures at their root. Commit after each working step with a clear message. Stay inside this repository. When every criterion is verified and the repository has a remote, open a pull request from your branch with the /open-pr skill (it writes the PR doc with Mermaid diagrams) and put the PR URL in AUTOPILOT_DONE.md; never push to the default branch, never merge, never deploy or publish, never spend money. If you are truly blocked on something only a human can provide (a credential, paid access, a legal or product decision SPEC.md cannot settle), write AUTOPILOT_BLOCKED.md explaining exactly what is needed, and stop.'
+GOAL='Every acceptance criterion in SPEC.md is implemented and verified in this repository, and AUTOPILOT_DONE.md exists listing each criterion with the command you ran and its result. Rules for the whole run: work autonomously and never ask the user anything; when a decision is needed, choose the option most consistent with SPEC.md (prefer the simplest one that meets it), record it in DECISIONS.md with one line of reasoning, and continue. Keep PROGRESS.md current: criteria done with evidence, in progress, next. Run the verification command from SPEC.md after each meaningful change and fix failures at their root. Commit after each working step with a clear message. Stay inside this repository. Before ending a turn, wait for the background subagents you started and collect their results (whatever is still running when the process exits is stopped), and stop dev servers and other background shells you no longer need. When every criterion is verified and the repository has a remote, open a pull request from your branch with the /open-pr skill (it writes the PR doc with Mermaid diagrams) and put the PR URL in AUTOPILOT_DONE.md; never push to the default branch, never merge, never deploy or publish, never spend money. If you are truly blocked on something only a human can provide (a credential, paid access, a legal or product decision SPEC.md cannot settle), write AUTOPILOT_BLOCKED.md explaining exactly what is needed, and stop.'
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { printf '%s  %s\n' "$(ts)" "$*" | tee -a "$LOG" >&2; }
@@ -155,6 +166,24 @@ limit_reset_after() {
 
 fmt_epoch() { date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$1"; }
 
+# Identifies the spec a session was started on (content, not mtime).
+spec_id() { cksum <"$DIR/SPEC.md" | awk '{ print $1 "-" $2 }'; }
+
+# One session per spec. Resuming one session across specs made every request re-read the
+# earlier specs' history (up to ~900K tokens per request after a week of runs).
+select_session() {
+  [ -f "$ST/session" ] || return 0
+  if [ "${AUTOPILOT_FRESH_SESSION:-0}" = "1" ]; then
+    reason="AUTOPILOT_FRESH_SESSION=1"
+  elif [ "$(cat "$ST/session.spec" 2>/dev/null || true)" != "$SPEC_ID" ]; then
+    reason="SPEC.md is not the one that session started on"
+  else
+    return 0
+  fi
+  log "starting a fresh session ($reason); previous session: $(cat "$ST/session")"
+  rm -f "$ST/session" "$ST/session.spec"
+}
+
 fingerprint() { # changes whenever Claude committed or edited something
   { git -C "$DIR" rev-parse HEAD 2>/dev/null; git -C "$DIR" status --porcelain 2>/dev/null; } | cksum
 }
@@ -180,12 +209,20 @@ do_run() {
   keep_awake
   credit_watch
   export CLAUDE_CODE_RETRY_WATCHDOG=1
+  export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=${AUTOPILOT_BG_WAIT_MS:-3600000}
   export CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS=${CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS:-600000}
   log "autopilot started in $DIR"
+  SPEC_ID=$(spec_id)
+  select_session
 
   attempt=0 stalls=0
   while :; do
-    if [ -f "$DIR/AUTOPILOT_DONE.md" ]; then log "DONE: see AUTOPILOT_DONE.md"; return 0; fi
+    if [ -f "$DIR/AUTOPILOT_DONE.md" ]; then
+      # The spec is finished: the next run (a new spec) must not resume this conversation.
+      rm -f "$ST/session" "$ST/session.spec"
+      log "DONE: see AUTOPILOT_DONE.md"
+      return 0
+    fi
     if [ -f "$DIR/AUTOPILOT_BLOCKED.md" ]; then log "BLOCKED: see AUTOPILOT_BLOCKED.md"; return 3; fi
     if [ "$attempt" -gt "$MAX_RESTARTS" ]; then log "giving up after $MAX_RESTARTS restarts"; return 1; fi
 
@@ -209,7 +246,10 @@ do_run() {
     CPID=""
     if [ -z "$session" ]; then
       session=$(jq -r 'select(.type == "system" and .subtype == "init") | .session_id' "$EVENTS" 2>/dev/null | tail -1)
-      [ -n "$session" ] && echo "$session" >"$ST/session"
+      if [ -n "$session" ]; then
+        echo "$session" >"$ST/session"
+        echo "$SPEC_ID" >"$ST/session.spec"
+      fi
     fi
     log "claude exited with status $rc"
 
